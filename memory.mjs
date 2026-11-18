@@ -903,7 +903,7 @@ export class MemoryStore {
     for (const name of categoryNames) this.writeCategory(name, groups.get(name));
     const sections = categoryNames.map(name => `## ${name}\n\n[[${categoryDir}/${name}|分类说明与索引]]\n\n${groups.get(name).length ? groups.get(name).join('\n') : '暂无笔记。'}`);
     if (loose.length) sections.push(`## 未分类\n\n这些页面还没有结构化结论，需要重新整理或补齐分类。\n\n${loose.join('\n')}`);
-    this.atomic('wiki/index.md', `# 记忆目录\n\n文件夹记“这是什么实体”，分类页记“这是什么性质的知识”。\n\n${sections.join('\n\n')}\n\n[[wiki/log|整理记录]]\n`);
+    this.atomic('wiki/index.md', `# 记忆目录\n\n知识按性质分四类。文件夹记「这是什么实体」（人物、项目、主题…），分类页记「这是什么性质的知识」；每篇笔记由程序连到自己的分类页，分类页反向列出本类全部笔记。\n\n${sections.join('\n\n')}\n\n[[wiki/log|整理记录]]\n`);
     this.atomic('wiki/log.md', `# 整理记录\n\n${this.db.prepare('SELECT * FROM runs ORDER BY created DESC LIMIT 100').all().map(r => `- ${r.created} · ${r.status} · ${r.detail || '整理中'}`).join('\n')}\n`);
   }
 

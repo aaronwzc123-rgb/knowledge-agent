@@ -287,7 +287,7 @@ function messageCard(role, text = '', agentId = state.agent, id = null, sessionI
 let markdownId = 0;
 function renderMarkdown(target, value) {
   const scope = `md-${++markdownId}`;
-  const text = String(value).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+  const text = String(value).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').replace(/<!--[\s\S]*?-->/g, '');
   const lines = text.split(/\r?\n/); const definitions = new Map(); const body = [];
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^\[\^([^\]]+)\]:\s*(.*)$/);
@@ -445,7 +445,10 @@ async function openHandoff(data, epoch) {
   await refreshMemory(); if (state.epoch !== epoch) return; await loadSession(data.sessionId, true);
 }
 
-const noteTitle = path => String(path).split('/').at(-1).replace(/\.md$/, '');
+const noteTitle = path => {
+  const name = String(path).split('/').at(-1).replace(/\.md$/, '');
+  return name === 'index' ? '记忆目录' : name === 'log' ? '整理记录' : name;
+};
 async function showNote(path) {
   const version = ++state.noteVersion; state.notePath = path; setView('library'); closeMobileList();
   $('knowledge-title').textContent = noteTitle(path); $('knowledge-content').textContent = '读取中'; $('knowledge-raw').hidden = true; $('knowledge-content').hidden = false;
