@@ -12,4 +12,5 @@ __pycache__/
 
 # 项目文档（含私人信息，不推送）
 *.md
+!README.md
 !tools/document-extract/README.md
