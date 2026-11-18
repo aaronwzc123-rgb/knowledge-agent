@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#eef3ff">
+  <title>滔滔不绝</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%234c6bcc'/%3E%3Cpath d='M17 26v12m10-22v32m10-28v24m10-18v12' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="workspace">
+    <nav class="rail" aria-label="导航">
+      <a class="brand" href="/" aria-label="滔滔不绝"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 12v8m6-14v20m6-17v14m6-11v8"/></svg></a>
+      <div class="nav-items">
+        <button id="nav-chat" class="nav-item selected" type="button" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H3V6a2 2 0 0 1 2-2Z"/><path d="M8 10h.01M12 10h.01M16 10h.01"/></svg><span>对话</span></button>
+        <button id="nav-agents" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6M2 12v4M22 12v4"/></svg><span>Agent</span></button>
+        <button id="nav-library" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h7v17H4zM14 4l5-1 3 16-5 1zM7 7h1M7 16h1M17 7h1"/></svg><span>知识库</span></button>
+        <button id="nav-resources" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/><path d="M3 10h18"/></svg><span>资料库</span></button>
+      </div>
+      <button id="settings-btn" class="nav-item settings-nav" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.5 3-2 .9L5 6l-2 4 2.4 1.7v2.1L3 15.5 5 19l2.7-1 1.8 1 .5 3h4l.5-3 1.8-1 2.7 1 2-3.5-2.4-1.7v-2.1L21 10l-2-4-2.5.9-2-.9L14 3Z"/><circle cx="12" cy="12.5" r="3"/></svg><span>设置</span></button>
+    </nav>
+    <aside class="context-panel" aria-label="列表">
+      <header class="context-header"><h1 id="list-title">对话</h1><button id="new-chat" class="icon-button" type="button" aria-label="新对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></header>
+      <div class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input id="list-search" type="search" placeholder="搜索" aria-label="搜索"></div>
+      <div id="session-list" class="side-list" aria-label="对话历史"></div>
+      <div id="agent-list" class="side-list" aria-label="Agent" hidden></div>
+      <div id="wiki-list" class="side-list" aria-label="知识库" hidden></div>
+      <div id="resource-list" class="side-list" aria-label="资料文件夹" hidden></div>
+    </aside>
+    <main class="main-panel">
+      <header class="main-header"><button id="list-toggle" class="icon-button mobile-only" type="button" aria-label="列表"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button><h2 id="current-topic">新对话</h2><div class="header-actions"><span id="status-dot" class="status-dot" data-state="idle" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">未连接</span><button id="chat-menu" class="icon-button" type="button" aria-label="对话菜单"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button></div></header>
+      <div id="error-banner" class="error-banner" role="alert" hidden></div>
+      <section id="chat-view" class="view chat-view">
+        <section id="research-panel" class="research-panel" aria-label="查询" hidden><div><strong id="research-status">查询</strong><span><b id="research-count">0</b> 轮 · <b id="source-count">0</b> 来源</span></div><p id="research-query"></p><details><summary>查询记录</summary><ol id="research-history"></ol></details></section>
+        <div id="conversation" class="conversation" aria-label="对话内容" tabindex="0"><div id="welcome" class="welcome"><span class="welcome-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M10 19v10m9-20v30m10-25v20m9-15v10"/></svg></span><h2>滔滔不绝</h2></div></div>
+        <div class="composer-dock">
+          <div class="composer-toolbar"><div class="composer-tools"><button id="agent-picker" class="agent-picker" type="button" aria-expanded="false">@问答助手</button><button id="attach-resource" class="quiet-button" type="button">资料</button></div><div class="playback-controls"><span id="segment-count" class="count-label">0</span><button id="pause-btn" class="quiet-button" type="button" disabled>暂停</button><button id="resume-btn" class="quiet-button" type="button" disabled>继续</button></div></div>
+          <div id="resource-attachments" class="resource-attachments" aria-label="已选资料" hidden></div>
+          <form id="composer" class="composer"><label for="topic" class="sr-only">消息</label><textarea id="topic" rows="2" maxlength="4000" placeholder="消息" enterkeyhint="send"></textarea><button id="send-btn" class="send-button" type="submit" aria-label="发送" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5"/></svg></button></form>
+          <div id="mention-menu" class="mention-menu" role="listbox" aria-label="Agent" hidden></div>
+        </div>
+      </section>
+      <section id="agents-view" class="view document-view" hidden><article id="agent-detail" class="agent-detail"><div class="detail-heading"><span id="agent-avatar" class="large-avatar">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">只读</span><button id="agent-chat" class="primary-button" type="button">对话</button></div><h3>Skills</h3><div id="agent-skills" class="skill-list"></div><h3>提示词</h3><pre id="agent-prompt" class="prompt-content" tabindex="0"></pre></article></section>
+      <section id="library-view" class="view document-view" hidden><article id="knowledge-detail" class="knowledge-detail"><div class="knowledge-toolbar"><h2 id="knowledge-title">知识库</h2><div class="document-actions"><button id="note-raw-toggle" class="quiet-button" type="button" hidden>原文</button><a id="note-obsidian" class="quiet-button" href="#" hidden>Obsidian</a><a id="note-download" class="quiet-button" href="#" download hidden>下载</a><button id="note-forget" class="quiet-button danger" type="button" hidden>忘记</button></div></div><div id="knowledge-content" class="markdown-content"></div><pre id="knowledge-raw" class="raw-content" tabindex="0" hidden></pre></article></section>
+      <section id="resources-view" class="view document-view resource-view" hidden>
+        <header class="resource-toolbar"><span id="resource-count" class="resource-count">0 份</span><div class="document-actions"><button id="resource-upload-button" class="primary-button" type="button">上传</button><button id="resource-new-folder" class="secondary-button" type="button">新建文件夹</button><button id="resource-refresh" class="secondary-button" type="button">刷新</button><button id="resource-open-folder" class="secondary-button" type="button">文件夹</button></div></header>
+        <input id="resource-upload" type="file" multiple hidden>
+        <p id="resource-status" class="resource-status" role="status" hidden></p>
+        <nav id="resource-location" class="resource-location" aria-label="资料路径"></nav>
+        <div id="resource-overview"><div id="resource-empty" class="document-empty">暂无资料</div><div id="resource-table-wrapper" class="resource-table-wrapper" role="region" aria-label="资料文件" tabindex="0" hidden><table class="resource-table" role="table"><thead><tr><th scope="col">名称</th><th scope="col">类型</th><th scope="col">大小</th><th scope="col">更新</th></tr></thead><tbody id="resource-table"></tbody></table></div></div>
+        <article id="resource-detail" hidden><div class="resource-detail-heading"><button id="resource-back" class="quiet-button" type="button">返回</button><div class="document-actions"><button id="resource-extract" class="secondary-button" type="button">提取</button><button id="resource-summarize" class="primary-button" type="button">摘要</button><button id="resource-open" class="secondary-button" type="button">打开</button><a id="resource-download" class="secondary-button" download>下载</a><button id="resource-copy" class="secondary-button" type="button">复制引用</button></div></div><h2 id="resource-title" class="resource-title"></h2><p id="resource-meta" class="resource-meta"></p><section id="resource-extraction" class="resource-extraction" aria-label="提取结果" hidden><div id="resource-extraction-status" role="status"></div><div id="resource-extraction-pages"></div></section><div id="resource-preview" class="resource-preview" role="region" aria-label="资料预览"></div></article>
+      </section>
+    </main>
+  </div>
+  <dialog id="settings-dialog" aria-labelledby="settings-title"><header class="dialog-heading"><h2 id="settings-title">设置</h2><button id="settings-close" class="icon-button" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header><div class="settings-content">
+    <section class="settings-group"><h3>DeepSeek</h3><label for="api-key">API Key</label><input id="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><div class="setting-inline"><button id="connect-btn" class="primary-button" type="button">连接</button><span id="connection-status" class="muted" role="status">未连接</span></div><label for="model">模型</label><select id="model"><option value="deepseek-flash">deepseek-flash</option></select></section>
+    <section class="settings-group"><h3>对话</h3><label for="settings-agent">Agent</label><select id="settings-agent"></select><label class="switch-row" for="web-search"><span>联网查询</span><input id="web-search" type="checkbox" role="switch"></label><label class="switch-row" for="reply-voice"><span>朗读回复</span><input id="reply-voice" type="checkbox" role="switch"></label><label class="switch-row" for="remember-history"><span>长期记忆</span><input id="remember-history" type="checkbox" role="switch" checked></label></section>
+    <section class="settings-group"><h3>声音</h3><label for="voice">声音</label><select id="voice"><option value="">系统默认</option></select><div class="setting-inline"><label for="rate">语速</label><output id="rate-value" for="rate">1.0×</output></div><input id="rate" type="range" min="0.7" max="1.5" step="0.1" value="1"><button id="test-voice" class="secondary-button" type="button">试听</button></section>
+    <section class="settings-group"><h3>知识库</h3><label class="switch-row" for="knowledge-permission"><span>管理员编辑权限</span><input id="knowledge-permission" type="checkbox" role="switch"></label><p id="memory-status" class="muted" role="status"></p><div class="setting-actions"><button id="open-memory" class="secondary-button" type="button">知识库</button><a id="vault-link" class="secondary-button" href="#">Obsidian</a><button id="backup-memory" class="secondary-button" type="button">备份</button><button id="clear-memory" class="secondary-button" type="button">清除兴趣</button></div></section>
+  </div></dialog>
+  <dialog id="chat-actions-dialog" aria-labelledby="chat-actions-title"><header class="dialog-heading"><h2 id="chat-actions-title">对话</h2><button id="chat-actions-close" class="icon-button" type="button" aria-label="关闭">×</button></header><div class="dialog-actions"><button id="view-chat-raw" class="secondary-button" type="button">原文</button><button id="delete-session" class="secondary-button danger" type="button">删除</button></div></dialog>
+  <dialog id="resource-picker-dialog" aria-labelledby="resource-picker-title"><header class="dialog-heading"><h2 id="resource-picker-title">资料</h2><button id="resource-picker-close" class="icon-button" type="button" aria-label="关闭">×</button></header><div class="resource-picker-content"><input id="resource-picker-search" type="search" aria-label="搜索资料" placeholder="搜索" autofocus><div id="resource-picker-files" class="resource-picker-files"></div><p id="resource-picker-status" class="muted" role="status"></p><button id="resource-picker-confirm" class="primary-button" type="button">确定</button></div></dialog>
+  <dialog id="resource-folder-dialog" aria-labelledby="resource-folder-title"><header class="dialog-heading"><h2 id="resource-folder-title">新建文件夹</h2><button id="resource-folder-close" class="icon-button" type="button" aria-label="关闭">×</button></header><form id="resource-folder-form" class="resource-folder-form"><label for="resource-folder-name">名称</label><input id="resource-folder-name" maxlength="120" required autofocus><p id="resource-folder-status" class="muted" role="status"></p><button class="primary-button" type="submit">创建</button></form></dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

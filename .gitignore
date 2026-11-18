@@ -1,0 +1,15 @@
+# 本机运行数据与私人内容，不推送
+data/
+我的记忆库/
+资料库/
+backups/
+test-results/
+
+# 依赖与缓存
+node_modules/
+__pycache__/
+*.log
+
+# 项目文档（含私人信息，不推送）
+*.md
+!tools/document-extract/README.md
