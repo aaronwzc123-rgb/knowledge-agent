@@ -96,7 +96,7 @@ export async function extractDocument({ path, ext = extname(path).slice(1), sign
     if (imageTypes.has(ext)) result = { parser: 'windows-ocr', pages: [{ locator: '第1张图', page: 1, text: '', ocrImage: resolve(path) }], warnings: [] };
     else {
       const python = await pythonPath();
-      if (!python) throw failure('未找到本地文档解析环境，请安装 Python 及 pypdfium2，或设置 TAOTAO_PYTHON。', 503);
+      if (!python) throw failure('未找到本地文档解析环境：请安装 Python 3 后运行 pip install pypdf pypdfium2，或设置 TAOTAO_PYTHON 指向 python.exe。', 503);
       result = await run(python, [join(ROOT, 'resource-extract.py'), resolve(path), ext, temporary, String(MAX_PAGES), String(MAX_CHARS), String(MAX_OCR)], { signal, onProgress });
     }
     const images = result.pages.map((page, index) => ({ index, path: page.ocrImage })).filter(image => image.path);
@@ -134,5 +134,12 @@ if (process.argv[2] === '--doc-worker') {
     const text = parts.join('\n\n');
     const pages = text.split(/\n\s*\n/).filter(part => part.trim()).map((part, index) => ({ locator: `第${index + 1}段`, text: part }));
     process.stdout.write(JSON.stringify({ result: bound({ parser: 'word-extractor', pages, warnings: ['DOC 按段落定位，未使用排版页码；修订及隐藏内容请对照原件。'] }) }) + '\n');
-  } catch { process.stdout.write(JSON.stringify({ error: 'DOC 文件无法解析，文件可能损坏、加密或不是 Word 文档。' }) + '\n'); process.exitCode = 1; }
+  } catch (error) {
+    // 新机器上最容易踩的其实是少装一个包，不要报成"文件损坏"。
+    const missing = /Cannot find module|MODULE_NOT_FOUND/.test(String(error?.message || error));
+    const message = missing
+      ? '这台电脑还没有安装 DOC 解析组件：在项目的 tools/document-extract 文件夹里运行 npm install，然后重试。'
+      : 'DOC 文件无法解析，文件可能损坏、加密或不是 Word 文档。';
+    process.stdout.write(JSON.stringify({ error: message }) + '\n'); process.exitCode = 1;
+  }
 }
