@@ -1,4 +1,5 @@
 import { AGENTS, getAgent, conversationContext } from './agents.mjs';
+import { createKnowledgeGraph } from './graph.js';
 
 const $ = id => document.getElementById(id);
 const synth = window.speechSynthesis;
@@ -10,7 +11,8 @@ const state = {
   prefetch: null, pendingCard: null, cancelSpeech: null, count: 0,
   voices: [], voiceChosen: false, snapshot: { sessions: [], pages: [] },
   research: { task: '', queries: [], seenUrls: [], notes: '', round: 0 },
-  notePath: '', noteVersion: 0, replyPending: false, menuIndex: 0,
+  notePath: '', noteVersion: 0, noteTrail: [], noteOrigin: 'library', replyPending: false, menuIndex: 0,
+  graph: { loaded: false, loading: false, nodes: [] },
   resources: { files: [], folders: [{ path: '', name: '资料库' }], folder: '', currentFolder: '', loaded: false, selected: null, request: 0, version: null, page: null, locator: null, uploading: false, extractController: null },
   attachments: [], resourceIds: [], attachmentNotice: '', pickerSelection: new Set(),
 };
@@ -190,26 +192,95 @@ function setView(view) {
   if (state.view !== view) halt('navigation');
   if (view !== 'resources') stopExtraction();
   state.view = view;
-  for (const name of ['chat', 'agents', 'library', 'resources']) {
+  for (const name of ['chat', 'agents', 'library', 'resources', 'graph']) {
     $(`nav-${name}`).classList.toggle('selected', name === view);
     if (name === view) $(`nav-${name}`).setAttribute('aria-current', 'page');
     else $(`nav-${name}`).removeAttribute('aria-current');
     $(`${name}-view`).hidden = name !== view;
   }
-  $('session-list').hidden = view !== 'chat'; $('agent-list').hidden = view !== 'agents'; $('wiki-list').hidden = view !== 'library';
+  $('session-list').hidden = view !== 'chat'; $('agent-list').hidden = view !== 'agents';
+  $('wiki-list').hidden = !['library', 'graph'].includes(view);
   $('resource-list').hidden = view !== 'resources';
-  $('list-title').textContent = ({ chat: '对话', agents: 'Agent', library: '知识库', resources: '资料库' })[view];
+  $('list-title').textContent = ({ chat: '对话', agents: 'Agent', library: '知识库', resources: '资料库', graph: '图谱' })[view];
   $('new-chat').hidden = view !== 'chat'; $('chat-menu').hidden = view !== 'chat';
   $('status-dot').hidden = view === 'resources'; $('status-text').hidden = view === 'resources';
   $('list-search').value = '';
-  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? profile(state.detailAgent).name : view === 'resources' ? state.resources.selected?.name || '资料库' : state.notePath ? noteTitle(state.notePath) : '知识库';
+  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? profile(state.detailAgent).name
+    : view === 'resources' ? state.resources.selected?.name || '资料库' : view === 'graph' ? '知识图谱'
+    : state.notePath ? noteTitle(state.notePath) : '知识库';
   renderLists();
   if (view === 'agents') showAgent(state.detailAgent);
+  if (view === 'graph') void loadGraph();
   if (view === 'library' && !state.notePath) {
     $('knowledge-content').replaceChildren(); const empty = document.createElement('div'); empty.className = 'document-empty'; empty.textContent = '知识库'; $('knowledge-content').append(empty);
   }
 }
 function closeMobileList() { document.querySelector('.workspace').classList.remove('list-open'); }
+
+let graphView = null;
+function ensureGraph() {
+  if (graphView) return graphView;
+  graphView = createKnowledgeGraph($('knowledge-graph'), {
+    tip: $('graph-tip'),
+    onOpen: node => { if (node.path) void showNote(node.path); },
+  });
+  $('graph-fit').addEventListener('click', () => graphView.fit());
+  $('graph-refresh').addEventListener('click', () => { state.graph.loaded = false; void loadGraph(); });
+  $('graph-node').addEventListener('input', event => graphView.setNodeScale(Number(event.target.value)));
+  $('graph-scope-all').addEventListener('click', () => setGraphScope(false));
+  $('graph-scope-mutual').addEventListener('click', () => setGraphScope(true));
+  return graphView;
+}
+
+function updateGraphCount() {
+  if (!graphView) return;
+  const { nodes, edges, mutualOnly } = graphView.stats;
+  $('graph-count').textContent = `${nodes} 个笔记 · ${edges} 条${mutualOnly ? '双向' : ''}引用`;
+  $('graph-empty').hidden = nodes > 0;
+  $('graph-empty').textContent = mutualOnly && !nodes
+    ? '还没有互相引用的笔记。'
+    : '还没有笔记。收录几篇之后，它们会出现在这里。';
+}
+
+// 两个按钮互斥：切换时只重建边和节点，距离滑块保持原值。
+function setGraphScope(mutual) {
+  ensureGraph().setMutualOnly(mutual);
+  $('graph-scope-all').classList.toggle('selected', !mutual);
+  $('graph-scope-mutual').classList.toggle('selected', mutual);
+  $('graph-scope-all').setAttribute('aria-pressed', String(!mutual));
+  $('graph-scope-mutual').setAttribute('aria-pressed', String(mutual));
+  updateGraphCount();
+}
+async function loadGraph() {
+  if (state.graph.loading) return;
+  if (state.graph.loaded) { ensureGraph().resize(); return; }
+  state.graph.loading = true;
+  $('graph-count').textContent = '读取中';
+  try {
+    // 画布刚从 hidden 切出来时还没有尺寸，等一帧再建，取景才准。
+    if (!graphView) await new Promise(done => requestAnimationFrame(done));
+    const data = await jsonApi('/api/knowledge/graph');
+    const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    state.graph.nodes = nodes;
+    const graph = ensureGraph();
+    graph.setData(data);
+    renderGraphLegend(data.folders || [], graph);
+    updateGraphCount();
+    state.graph.loaded = true;
+  } catch (error) {
+    $('graph-count').textContent = '读取失败';
+    errorMessage(error.message);
+  } finally { state.graph.loading = false; }
+}
+function renderGraphLegend(folders, graph) {
+  const names = [...new Set(folders.filter(Boolean))].sort();
+  $('graph-legend').replaceChildren(...names.map(folder => {
+    const item = document.createElement('span');
+    const dot = document.createElement('i'); dot.style.background = graph?.colorOf(folder) || '#7d8aa5';
+    item.append(dot, document.createTextNode(folder));
+    return item;
+  }));
+}
 function sideRow(className, title, selected, onClick, icon = '') {
   const button = document.createElement('button'); button.type = 'button'; button.className = `${className}${selected ? ' selected' : ''}`;
   const symbol = document.createElement('span'); symbol.className = className === 'agent-row' ? 'row-avatar' : 'row-icon'; symbol.textContent = icon;
@@ -231,12 +302,16 @@ function renderLists() {
     row.dataset.agent = item.id; $('agent-list').append(row);
   }
   $('wiki-list').replaceChildren();
-  if (matches('我的记忆库')) $('wiki-list').append(sideRow('wiki-row', '我的记忆库', state.notePath === 'wiki/index.md', () => { void showNote('wiki/index.md'); }, '▣'));
+  const indexPath = state.snapshot.indexPath || 'wiki/index.md';
+  if (matches('我的记忆库')) $('wiki-list').append(sideRow('wiki-row', '我的记忆库', state.notePath === indexPath, () => { void showNote(indexPath); }, '▣'));
   let category = '';
   for (const page of state.snapshot.pages.filter(p => matches(p.path))) {
     const parts = page.path.split('/'); const group = parts.length > 2 ? parts[1] : '';
     if (category !== group) { category = group; const label = document.createElement('div'); label.className = 'list-label'; label.textContent = group; $('wiki-list').append(label); }
-    const row = sideRow('wiki-row', noteTitle(page.path), state.notePath === page.path, () => { void showNote(page.path); }, '◫');
+    const row = sideRow('wiki-row', noteTitle(page.path), state.notePath === page.path, () => {
+      if (state.view === 'graph') { ensureGraph().focus(page.id); closeMobileList(); }
+      else void showNote(page.path);
+    }, '◫');
     row.dataset.path = page.path; $('wiki-list').append(row);
   }
   if (state.view === 'resources') renderResources();
@@ -306,7 +381,7 @@ function renderMarkdown(target, value) {
       if (token.startsWith('[[')) {
         const [reference, label] = token.slice(2, -2).split('|'); const path = reference.split('#')[0];
         const normalized = path.endsWith('.md') ? path : `${path}.md`;
-        if (/^(wiki|raw|指导)\//.test(normalized) || ['欢迎.md', 'wiki-schema.md', '知识库准则.md'].includes(normalized)) {
+        if (normalized.length <= 1000 && normalized.split('/').every(part => part && !part.startsWith('.') && !/[\\:"<>|?*\x00-\x1f]/u.test(part))) {
           node = document.createElement('a'); node.href = '#knowledge'; node.textContent = label || noteTitle(normalized);
           node.addEventListener('click', event => { event.preventDefault(); void showNote(normalized); });
         }
@@ -394,7 +469,7 @@ function receiveResearch(data, card) {
 
 async function refreshMemory() {
   const data = await jsonApi('/api/memory/status'); state.snapshot = data; state.memoryReady = true;
-  state.permission = !!(data.permission ?? data.knowledge?.permission);
+  state.graph.loaded = false; state.permission = !!(data.permission ?? data.knowledge?.permission);
   $('knowledge-permission').checked = state.permission;
   $('memory-status').textContent = `${data.saved || 0} 条消息 · ${data.pages?.length || 0} 篇笔记`;
   if (data.obsidian) $('vault-link').href = data.obsidian;
@@ -449,9 +524,16 @@ const noteTitle = path => {
   const name = String(path).split('/').at(-1).replace(/\.md$/, '');
   return name === 'index' ? '记忆目录' : name === 'log' ? '整理记录' : name;
 };
-async function showNote(path) {
+async function showNote(path, { trail = true } = {}) {
+  // 记下从哪儿进来的：返回键先退回上一篇笔记，退完了再按来源回到图谱或知识库首页。
+  if (trail && state.notePath !== path) {
+    if (state.notePath) state.noteTrail.push(state.notePath);
+    else { state.noteOrigin = state.view; state.noteTrail = []; }
+  }
   const version = ++state.noteVersion; state.notePath = path; setView('library'); closeMobileList();
   $('knowledge-title').textContent = noteTitle(path); $('knowledge-content').textContent = '读取中'; $('knowledge-raw').hidden = true; $('knowledge-content').hidden = false;
+  // 首页本身就是目录，没有上一级可退。
+  $('note-back').hidden = path === 'wiki/index.md';
   for (const id of ['note-raw-toggle', 'note-obsidian', 'note-download', 'note-forget']) $(id).hidden = true;
   try {
     const data = await jsonApi(`/api/memory/note?path=${encodeURIComponent(path)}`); if (version !== state.noteVersion) return;
@@ -462,6 +544,16 @@ async function showNote(path) {
     $('note-forget').hidden = !state.snapshot.pages.some(page => page.path === path);
     if (state.view === 'library') status();
   } catch (error) { if (version === state.noteVersion) $('knowledge-content').textContent = error.message; }
+}
+
+function noteBack() {
+  const previous = state.noteTrail.pop();
+  if (previous) { void showNote(previous, { trail: false }); return; }
+  const origin = state.noteOrigin;
+  state.notePath = ''; state.noteVersion++;
+  if (origin === 'graph') { setView('graph'); void loadGraph(); return; }
+  // 没有上一篇可退时落到知识库首页，而不是留一个空白面板。
+  void showNote('wiki/index.md', { trail: false });
 }
 
 function resourceType(file) {
@@ -954,13 +1046,14 @@ $('agent-picker').addEventListener('click', () => { if ($('mention-menu').hidden
 document.addEventListener('click', event => { if (!event.target.closest('.composer-dock')) { $('mention-menu').hidden = true; $('agent-picker').setAttribute('aria-expanded', 'false'); } });
 $('pause-btn').addEventListener('click', () => halt()); $('resume-btn').addEventListener('click', start);
 $('new-chat').addEventListener('click', newChat);
-for (const view of ['chat', 'agents', 'library', 'resources']) $(`nav-${view}`).addEventListener('click', () => {
+for (const view of ['chat', 'agents', 'library', 'resources', 'graph']) $(`nav-${view}`).addEventListener('click', () => {
   halt('navigation');
   if (view === 'resources') { stopExtraction(); state.resources.selected = null; state.resources.request++; }
   setView(view);
-  if (matchMedia('(max-width:760px)').matches) document.querySelector('.workspace').classList.add('list-open');
+  // 图谱本身就是要看全屏，窄屏进来不自动弹出笔记列表，免得把画布盖住。
+  if (view !== 'graph' && matchMedia('(max-width:760px)').matches) document.querySelector('.workspace').classList.add('list-open');
   if (view === 'resources') void refreshResources().catch(error => errorMessage(error.message));
-  else void refreshMemory().catch(() => {});
+  else if (view !== 'graph') void refreshMemory().catch(() => {});
 });
 $('list-search').addEventListener('input', () => { if (state.view === 'resources') { stopExtraction(); state.resources.request++; state.resources.selected = null; $('current-topic').textContent = '资料库'; } renderLists(); });
 $('attach-resource').addEventListener('click', () => { void openResourcePicker(); });
@@ -1023,6 +1116,7 @@ $('knowledge-permission').addEventListener('change', async () => { const enabled
 $('open-memory').addEventListener('click', () => { $('settings-dialog').close(); setView('library'); void refreshMemory().catch(error => errorMessage(error.message)); });
 $('backup-memory').addEventListener('click', async () => { try { await memoryApi('backup', {}); $('memory-status').textContent = '已备份'; } catch (error) { errorMessage(error.message); } });
 $('clear-memory').addEventListener('click', async () => { try { await memoryApi('event', { id: crypto.randomUUID(), type: 'clear_preferences', payload: {}, interests: [] }); $('memory-status').textContent = '已清除'; } catch (error) { errorMessage(error.message); } });
+$('note-back').addEventListener('click', noteBack);
 $('note-raw-toggle').addEventListener('click', () => { const raw = !$('knowledge-raw').hidden; $('knowledge-raw').hidden = raw; $('knowledge-content').hidden = !raw; $('note-raw-toggle').textContent = raw ? '原文' : '阅读'; });
 $('note-forget').addEventListener('click', async () => { const page = state.snapshot.pages.find(p => p.path === state.notePath); if (!page || !confirm('忘记这篇笔记及相关记忆？')) return; halt('forget'); try { await memoryApi('forget-page', { id: page.id }); state.messages = []; state.current = null; state.replyPending = false; state.notePath = ''; state.noteVersion++; await refreshMemory(); setView('library'); } catch (error) { errorMessage(error.message); } });
 $('chat-menu').addEventListener('click', () => $('chat-actions-dialog').showModal()); $('chat-actions-close').addEventListener('click', () => $('chat-actions-dialog').close());

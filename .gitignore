@@ -14,3 +14,4 @@ __pycache__/
 *.md
 !README.md
 !tools/document-extract/README.md
+!/知识库收录规则.md

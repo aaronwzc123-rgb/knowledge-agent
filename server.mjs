@@ -1,13 +1,13 @@
 import { createServer as createHttpServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { MemoryStore, validId } from './memory.mjs';
 import { getAgent } from './agents.mjs';
 import { AGENTS } from './agents.mjs';
-import { runLibrarian } from './librarian.mjs';
+import { runLibrarian } from './wiki-librarian.mjs';
 import { lookup } from 'node:dns/promises';
 import { createActivityTracker } from './activity.mjs';
 import { ResourceLibrary } from './resource-library.mjs';
@@ -16,13 +16,37 @@ import { ResourceDocuments, runResourceSummary } from './resource-summary.mjs';
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const API = 'https://api.deepseek.com';
 const BODY_LIMIT = 100 * 1024;
-const FILES = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/index.html', ['index.html', 'text/html; charset=utf-8']],
-  ['/style.css', ['style.css', 'text/css; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/agents.mjs', ['agents.mjs', 'text/javascript; charset=utf-8']],
+const STATIC_TYPES = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+  ['.ico', 'image/x-icon'],
+  ['.webmanifest', 'application/manifest+json'],
 ]);
+
+// 前端脚本用 .js，服务端模块用 .mjs。.mjs 只放行前端也要用的 agents.mjs，
+// 其余的（server / memory / librarian…）留在服务端，避免源码被直接下载。
+const SHARED_MODULES = new Set(['agents.mjs']);
+
+// 静态文件按扩展名从项目根目录直接读：新增前端文件不必再改白名单，也不必重启服务。
+// 只认根目录下的单层文件名，带目录或 .. 的一律拒绝，避免路径穿越。
+async function staticFile(pathname) {
+  let relative;
+  try { relative = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, ''); }
+  catch { return null; }
+  if (!relative || relative.includes('..') || relative.includes('\\') || relative.includes('/') || relative.startsWith('.')) return null;
+  const mime = STATIC_TYPES.get(extname(relative).toLowerCase());
+  if (!mime) return null;
+  if (extname(relative).toLowerCase() === '.mjs' && !SHARED_MODULES.has(relative)) return null;
+  const full = resolve(ROOT, relative);
+  try { if (!(await stat(full)).isFile()) return null; } catch { return null; }
+  return { full, mime };
+}
 
 function error(status, message) {
   return Object.assign(new Error(message), { status });
@@ -167,7 +191,7 @@ async function proxy(req, res, body, models, fetchImpl, memory, documentLookup, 
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, body.agent === 'summarizer' ? 900000 : body.agent === 'librarian' ? 240000 : 120000);
+  }, body.agent === 'summarizer' ? 900000 : body.agent === 'librarian' ? 3600000 : 120000);
   timer.unref();
   const checkActive = () => {
     controller.signal.throwIfAborted();
@@ -249,7 +273,7 @@ async function proxy(req, res, body, models, fetchImpl, memory, documentLookup, 
       const originMessage = submission && memory.history(submission.origin_session).messages.find(message => message.id === submission.origin_message);
       const result = await runLibrarian({ memory, apiKey: body.apiKey, model: body.model, question: original?.content, history,
         fetchImpl, lookupImpl: documentLookup, signal: controller.signal, send, activity,
-        submission, userSourceId: original?.id,
+        submission, originMessage, webSearch: body.webSearch, userSourceId: original?.id,
         documentDraft: submission && (documents?.draft(submission.origin_message) || (originMessage?.agent === 'summarizer' ? { sources: [] } : null)) });
       checkActive();
       const delivering = await activity.start('answer', '返回整理结果');
@@ -360,12 +384,12 @@ async function proxy(req, res, body, models, fetchImpl, memory, documentLookup, 
     }
     const latestUser = [...messages].reverse().find(m => m.role === 'user')?.content || '';
     const reviewable = mem?.visible && !latestUser.includes('应用自动续讲提示');
-    if (reviewable) messages.unshift({ role: 'system', content: '你只能读取知识库，不能直接修改。用户要求收录/保存，或有值得长期保存的新知识、个人材料、观点或经验时，可以调用request_knowledge_review交给知识库管理员按类型审阅。保留用户的原话、材料归属与实际性质，助手分析只能以助手分析提交，不能把推测写成事实或用户认同。提交后由知识库管理员在独立对话中判断与处理，不可自称已经收录。普通闲聊、重复内容、无新信息不要提交。' });
+    if (reviewable) messages.unshift({ role: 'system', content: '你只能读取知识库，不能直接修改。用户要求收录/保存，或有值得长期保存的新知识、个人材料、观点或经验时，可以调用request_knowledge_review交给知识库管理员整理成可复用的知识点和主题导读。保留用户的原话、材料归属与实际性质，助手分析只能以助手分析提交，不能把推测写成事实或用户认同。提交后由知识库管理员在独立对话中判断与处理，不可自称已经收录。普通闲聊、重复内容、无新信息不要提交。' });
     const answering = await activity.start('answer', '生成回答', { detail: `DeepSeek · ${body.model}` });
     const upstream = await call('chat/completions', {
       model: body.model, messages, stream: true,
       thinking: { type: 'disabled' }, max_tokens: agent.maxTokens, temperature: agent.temperature,
-      ...(reviewable ? { tools: [{ type: 'function', function: { name: 'request_knowledge_review', description: '提交本次对话中有价值的知识、个人资料、观点或经验，由知识库管理员按内容类型独立审阅并决定是否收录。',
+      ...(reviewable ? { tools: [{ type: 'function', function: { name: 'request_knowledge_review', description: '提交本次对话中有价值的知识、个人资料、观点或经验，由知识库管理员检查旧页、归纳知识点、维护主题导读。',
         parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'], additionalProperties: false } } }], tool_choice: 'auto' } : {}),
     }, '回答');
     if (!upstream.body || !upstream.headers.get('content-type')?.includes('text/event-stream')) {
@@ -478,7 +502,7 @@ export function createServer({ fetchImpl = globalThis.fetch, memoryRoot = ROOT, 
       }
       const url = new URL(req.url, `http://${host}`);
       if (req.method === 'GET' && url.pathname === '/health') {
-        json(res, 200, { app: 'taotao-local', version: 'policy-v11' });
+        json(res, 200, { app: 'taotao-local', version: 'wiki-editor-v1' });
       } else if (resources && req.method === 'GET' && url.pathname === '/api/resources') {
         json(res, 200, await resources.list());
       } else if (resources && req.method === 'POST' && url.pathname === '/api/resources/upload') {
@@ -509,6 +533,8 @@ export function createServer({ fetchImpl = globalThis.fetch, memoryRoot = ROOT, 
           permission: memory?.knowledgePermission() || false });
       } else if (memory && req.method === 'GET' && url.pathname === '/api/knowledge/status') {
         json(res, 200, memory.knowledgeStatus());
+      } else if (memory && req.method === 'GET' && url.pathname === '/api/knowledge/graph') {
+        json(res, 200, memory.knowledgeGraph());
       } else if (memory && req.method === 'POST' && url.pathname === '/api/knowledge/permission') {
         const body = await readJson(req);
         json(res, 200, memory.setKnowledgePermission(body.enabled));
@@ -543,11 +569,15 @@ export function createServer({ fetchImpl = globalThis.fetch, memoryRoot = ROOT, 
           default: throw error(404, '没有这个记忆操作。');
         }
         json(res, 200, result);
-      } else if (req.method === 'GET' && FILES.has(url.pathname)) {
-        const [file, mime] = FILES.get(url.pathname);
-        const content = await readFile(resolve(ROOT, file));
-        res.writeHead(200, { 'Content-Type': mime });
-        res.end(content);
+      } else if (req.method === 'GET') {
+        const asset = await staticFile(url.pathname);
+        if (!asset) { json(res, 404, { error: '没有这个页面。' }); }
+        else {
+          const content = await readFile(asset.full);
+          // 本地应用不该让浏览器拿旧脚本：改完代码刷新就生效。
+          res.writeHead(200, { 'Content-Type': asset.mime, 'Cache-Control': 'no-store' });
+          res.end(content);
+        }
       } else if (req.method === 'POST' && ['/api/chat', '/api/models'].includes(url.pathname)) {
         const body = await readJson(req);
         validateKey(body.apiKey);

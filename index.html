@@ -16,6 +16,7 @@
         <button id="nav-chat" class="nav-item selected" type="button" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H3V6a2 2 0 0 1 2-2Z"/><path d="M8 10h.01M12 10h.01M16 10h.01"/></svg><span>对话</span></button>
         <button id="nav-agents" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6M2 12v4M22 12v4"/></svg><span>Agent</span></button>
         <button id="nav-library" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h7v17H4zM14 4l5-1 3 16-5 1zM7 7h1M7 16h1M17 7h1"/></svg><span>知识库</span></button>
+        <button id="nav-graph" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.4"/><circle cx="17.5" cy="5.5" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="m8.2 6.4 7.1-.6M7.3 9.2l3.5 5.6M16.4 7.8l-3.1 6.9"/></svg><span>图谱</span></button>
         <button id="nav-resources" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/><path d="M3 10h18"/></svg><span>资料库</span></button>
       </div>
       <button id="settings-btn" class="nav-item settings-nav" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.5 3-2 .9L5 6l-2 4 2.4 1.7v2.1L3 15.5 5 19l2.7-1 1.8 1 .5 3h4l.5-3 1.8-1 2.7 1 2-3.5-2.4-1.7v-2.1L21 10l-2-4-2.5.9-2-.9L14 3Z"/><circle cx="12" cy="12.5" r="3"/></svg><span>设置</span></button>
@@ -42,7 +43,27 @@
         </div>
       </section>
       <section id="agents-view" class="view document-view" hidden><article id="agent-detail" class="agent-detail"><div class="detail-heading"><span id="agent-avatar" class="large-avatar">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">只读</span><button id="agent-chat" class="primary-button" type="button">对话</button></div><h3>Skills</h3><div id="agent-skills" class="skill-list"></div><h3>提示词</h3><pre id="agent-prompt" class="prompt-content" tabindex="0"></pre></article></section>
-      <section id="library-view" class="view document-view" hidden><article id="knowledge-detail" class="knowledge-detail"><div class="knowledge-toolbar"><h2 id="knowledge-title">知识库</h2><div class="document-actions"><button id="note-raw-toggle" class="quiet-button" type="button" hidden>原文</button><a id="note-obsidian" class="quiet-button" href="#" hidden>Obsidian</a><a id="note-download" class="quiet-button" href="#" download hidden>下载</a><button id="note-forget" class="quiet-button danger" type="button" hidden>忘记</button></div></div><div id="knowledge-content" class="markdown-content"></div><pre id="knowledge-raw" class="raw-content" tabindex="0" hidden></pre></article></section>
+      <section id="library-view" class="view document-view" hidden><article id="knowledge-detail" class="knowledge-detail"><div class="knowledge-toolbar"><button id="note-back" class="quiet-button note-back" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>返回</button><h2 id="knowledge-title">知识库</h2><div class="document-actions"><button id="note-raw-toggle" class="quiet-button" type="button" hidden>原文</button><a id="note-obsidian" class="quiet-button" href="#" hidden>Obsidian</a><a id="note-download" class="quiet-button" href="#" download hidden>下载</a><button id="note-forget" class="quiet-button danger" type="button" hidden>忘记</button></div></div><div id="knowledge-content" class="markdown-content"></div><pre id="knowledge-raw" class="raw-content" tabindex="0" hidden></pre></article></section>
+      <section id="graph-view" class="view graph-view" hidden>
+        <div class="graph-toolbar">
+          <span id="graph-count" class="graph-count">0 个笔记</span>
+          <div class="graph-actions">
+            <div class="segmented" role="group" aria-label="引用范围">
+              <button id="graph-scope-all" class="segmented-item selected" type="button" aria-pressed="true">全部引用</button>
+              <button id="graph-scope-mutual" class="segmented-item" type="button" aria-pressed="false">只看双向</button>
+            </div>
+            <label class="graph-range" for="graph-node"><span>节点</span><input id="graph-node" type="range" min="60" max="160" step="5" value="100" aria-label="节点大小"></label>
+            <span id="graph-legend" class="graph-legend" aria-label="目录图例"></span>
+            <button id="graph-fit" class="quiet-button" type="button">复位</button>
+            <button id="graph-refresh" class="quiet-button" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="graph-canvas-wrap">
+          <canvas id="knowledge-graph" aria-label="知识图谱：每个圆点是一篇笔记，连线表示引用。双击打开笔记。"></canvas>
+          <div id="graph-tip" class="graph-tip" hidden></div>
+          <p id="graph-empty" class="document-empty" hidden>还没有笔记。收录几篇之后，它们会出现在这里。</p>
+        </div>
+      </section>
       <section id="resources-view" class="view document-view resource-view" hidden>
         <header class="resource-toolbar"><span id="resource-count" class="resource-count">0 份</span><div class="document-actions"><button id="resource-upload-button" class="primary-button" type="button">上传</button><button id="resource-new-folder" class="secondary-button" type="button">新建文件夹</button><button id="resource-refresh" class="secondary-button" type="button">刷新</button><button id="resource-open-folder" class="secondary-button" type="button">文件夹</button></div></header>
         <input id="resource-upload" type="file" multiple hidden>

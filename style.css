@@ -263,6 +263,8 @@ a.activity-item:hover { color: #3658ac; border-color: #a9bfed; background: #edf3
 .prompt-content { white-space: pre-wrap; overflow-wrap: anywhere; font: .875rem/2 var(--font); color: #566986; background: #ffffff; border: 1px solid #e0e7f5; border-radius: 15px; padding: 24px; max-height: none; margin: 0; }
 .knowledge-toolbar { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px 20px; padding-bottom: 23px; margin-bottom: 25px; border-bottom: 1px solid #dfe7f5; }
 .knowledge-toolbar h2 { flex: 1; min-width: 140px; margin: 4px 0; font-size: 1.5rem; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; text-wrap: balance; }
+.note-back { align-self: flex-start; margin-top: 4px; padding-left: 6px; }
+.note-back svg { width: 15px; height: 15px; }
 .document-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .markdown-content { color: #3f4f6b; font-size: .9375rem; line-height: 1.95; overflow-wrap: anywhere; }
 .markdown-content h1 { font-size: 1.75rem; line-height: 1.5; margin: 25px 0; font-weight: 650; text-wrap: balance; }
@@ -286,6 +288,44 @@ a.activity-item:hover { color: #3658ac; border-color: #a9bfed; background: #edf3
 .markdown-content :target { scroll-margin-block: 4rem; background: #edf3ff; }
 .raw-content { white-space: pre-wrap; overflow-wrap: anywhere; font: .8125rem/1.9 "Cascadia Code", Consolas, "Microsoft YaHei", monospace; color: #60769c; padding: 22px; background: #ffffff; border: 1px solid #dee7f8; border-radius: 14px; }
 .document-empty { display: grid; place-items: center; min-height: 260px; color: #61718f; font-size: .875rem; }
+
+/* 知识图谱：画布铺满，工具条只放数量和取景按钮。 */
+.graph-view { display: flex; flex-direction: column; min-height: 0; background: var(--canvas); }
+.graph-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; padding: 12px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.graph-count { font-size: .75rem; color: var(--muted); }
+.graph-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 二选一：全部引用 / 只看双向。用分段控件，避免两个独立按钮看不出互斥。 */
+.segmented { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--sidebar); }
+.segmented-item { min-height: 28px; padding: 3px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: .6875rem; line-height: 1.4; white-space: nowrap; }
+.segmented-item:hover { color: var(--accent); }
+.segmented-item.selected { background: var(--bg); color: #3454a3; box-shadow: 0 1px 2px #4c6bcc1f; }
+.graph-range { display: inline-flex; align-items: center; gap: 8px; font-size: .6875rem; color: var(--muted); white-space: nowrap; }
+.graph-range input { width: 78px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.graph-legend { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 5px; font-size: .6875rem; color: var(--muted); }
+.graph-legend i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.graph-canvas-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+#knowledge-graph { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.graph-tip {
+  position: absolute; left: 0; top: 0; z-index: 2; display: grid; gap: 2px;
+  max-width: 260px; padding: 8px 11px; border-radius: 10px; border: 1px solid var(--line);
+  background: #fffffff2; box-shadow: 0 8px 24px #3d4c7020; pointer-events: none;
+  font-size: .75rem; color: var(--muted);
+}
+.graph-tip strong { font-size: .8125rem; font-weight: 600; color: var(--ink); }
+.graph-tip span { max-width: 238px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-view .document-empty { position: absolute; inset: 0; margin: 0; }
+@media (pointer: coarse) { .graph-toolbar { padding: 10px 14px; } }
+@media (max-width: 760px) {
+  /* 窄屏先把图例收起来，把高度留给画布；控件折到第二行，别挤成一条。 */
+  .graph-legend { display: none; }
+  .graph-toolbar { flex-wrap: wrap; padding: 8px 12px; gap: 6px; }
+  .graph-count { font-size: .6875rem; }
+  .graph-actions { width: 100%; gap: 6px; justify-content: space-between; }
+  .graph-range { gap: 5px; }
+  .graph-range input { width: 52px; }
+}
+
 .resource-category {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 49px;
   padding: 12px; margin: 3px 0; text-align: left; border: 1px solid transparent;
