@@ -233,3 +233,9 @@ data/                 运行时数据库（不入库）
 - 笔记保存在本机。运行全库整理时，相关 Markdown 内容会分批送给你连接的模型；整理之前请确认模型可以阅读这些材料。
 - 聊天记录、笔记、资料库、备份和 Harness² 的依赖、凭证及运行结果保存在本机，相关路径见 `.gitignore`。
 - Wiki 页面、原始档案和网页里的指令都按数据处理，不会改变助手的行为或授予权限。
+
+## 开源许可
+
+本项目采用 MIT 许可证。[查看许可证](LICENSE)
+
+Google Harness² 采用 Apache-2.0，其他第三方依赖沿用各自的许可证。[Harness² 许可证](https://github.com/google-research/harness2/blob/6868817518876de8fd170c6a8354daca273b6191/LICENSE)
