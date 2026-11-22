@@ -42,7 +42,28 @@
           <div id="mention-menu" class="mention-menu" role="listbox" aria-label="Agent" hidden></div>
         </div>
       </section>
-      <section id="agents-view" class="view document-view" hidden><article id="agent-detail" class="agent-detail"><div class="detail-heading"><span id="agent-avatar" class="large-avatar">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">只读</span><button id="agent-chat" class="primary-button" type="button">对话</button></div><h3>Skills</h3><div id="agent-skills" class="skill-list"></div><h3>提示词</h3><pre id="agent-prompt" class="prompt-content" tabindex="0"></pre></article></section>
+      <section id="agents-view" class="view document-view" hidden>
+        <article id="agent-detail" class="agent-detail">
+          <div class="detail-heading"><span id="agent-avatar" class="large-avatar" aria-hidden="true">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">Wiki 只读</span><button id="agent-edit" class="secondary-button" type="button" aria-controls="agent-harness" disabled>编辑</button><button id="agent-chat" class="primary-button" type="button">对话</button></div>
+          <p id="agent-description" class="muted" hidden></p>
+          <div id="agent-harness" class="agent-harness" aria-label="Agent 的 Harness"></div>
+          <section id="harness2-upstream" class="harness2-upstream" hidden>
+            <p class="muted">直接运行 Google 仓库里的命令。模型设置读取源码目录的 .env，任务产物由上游程序写入 runs/。</p>
+            <form id="harness2-upstream-form" class="harness2-command">
+              <label class="harness-field" for="harness2-command"><span>官方命令</span><select id="harness2-command"></select></label>
+              <label class="harness-field" for="harness2-args"><span>参数（每行一个）</span><textarea id="harness2-args" rows="5" spellcheck="false"></textarea></label>
+              <div class="harness-actions">
+                <button id="harness2-run" class="primary-button" type="submit" disabled>运行</button>
+                <button id="harness2-help" class="secondary-button" type="button" disabled>参数帮助</button>
+                <button id="harness2-stop" class="quiet-button" type="button" disabled>停止</button>
+                <span id="harness2-status" class="harness-feedback" role="status"></span>
+              </div>
+            </form>
+            <pre id="harness2-output" class="harness2-output" aria-label="命令输出" tabindex="0" hidden></pre>
+            <p class="harness2-links"><a href="https://github.com/google-research/harness2" target="_blank" rel="noopener noreferrer">GitHub 源码</a><a href="https://github.com/google-research/harness2/blob/main/docs/SETUP.md" target="_blank" rel="noopener noreferrer">官方安装与模型配置</a><a href="https://github.com/google-research/harness2/blob/main/docs/BENCHMARKS.md" target="_blank" rel="noopener noreferrer">基准任务指南</a></p>
+          </section>
+        </article>
+      </section>
       <section id="library-view" class="view document-view" hidden><article id="knowledge-detail" class="knowledge-detail"><div class="knowledge-toolbar"><button id="note-back" class="quiet-button note-back" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>返回</button><h2 id="knowledge-title">知识库</h2><div class="document-actions"><button id="note-raw-toggle" class="quiet-button" type="button" hidden>原文</button><a id="note-obsidian" class="quiet-button" href="#" hidden>Obsidian</a><a id="note-download" class="quiet-button" href="#" download hidden>下载</a><button id="note-forget" class="quiet-button danger" type="button" hidden>忘记</button></div></div><div id="knowledge-content" class="markdown-content"></div><pre id="knowledge-raw" class="raw-content" tabindex="0" hidden></pre></article></section>
       <section id="graph-view" class="view graph-view" hidden>
         <div class="graph-toolbar">

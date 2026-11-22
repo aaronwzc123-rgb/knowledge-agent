@@ -1,5 +1,7 @@
-import { AGENTS, getAgent, conversationContext } from './agents.mjs';
+import { AGENTS, getAgent, conversationContext, reviewConfigured } from './agents.mjs';
 import { createKnowledgeGraph } from './graph.js';
+import { endAgentHarnessEdit, mountAgentHarness } from './agent-editor.js';
+import { mountUpstreamHarness2 } from './harness2-panel.js';
 
 const $ = id => document.getElementById(id);
 const synth = window.speechSynthesis;
@@ -18,6 +20,8 @@ const state = {
 };
 
 const profile = (id = state.agent) => state.agents.find(a => a.id === id) || getAgent(id);
+const originalHarness = { id: 'harness2-upstream', name: 'Harness²' };
+const detailProfile = id => id === originalHarness.id ? originalHarness : profile(id);
 const abortError = () => new DOMException('已暂停', 'AbortError');
 const isCurrent = epoch => state.active && state.epoch === epoch;
 const persistSetting = (name, value) => { try { localStorage.setItem(name, String(value)); } catch {} };
@@ -182,14 +186,16 @@ function selectAgent(id, stop = true) {
   state.agent = id;
   $('agent-picker').textContent = `@${profile().name}`;
   $('settings-agent').value = id;
-  $('web-search').checked = searchPreference(id);
+  $('web-search').disabled = id === 'harness2';
+  $('web-search').checked = id !== 'harness2' && searchPreference(id);
   $('pause-btn').textContent = profile().continuous ? '暂停' : '停止';
-  $('resume-btn').textContent = profile().continuous ? '继续' : '重试';
+  $('resume-btn').textContent = profile().continuous || id === 'librarian' ? '继续' : '重试';
   persistSetting('taotao-agent', id);
   status();
 }
 function setView(view) {
-  if (state.view !== view) halt('navigation');
+  if (state.view === 'agents' && view !== 'agents') endAgentHarnessEdit($('agent-harness'));
+  if (state.view !== view && !(state.active && state.agent === 'librarian')) halt('navigation');
   if (view !== 'resources') stopExtraction();
   state.view = view;
   for (const name of ['chat', 'agents', 'library', 'resources', 'graph']) {
@@ -205,7 +211,7 @@ function setView(view) {
   $('new-chat').hidden = view !== 'chat'; $('chat-menu').hidden = view !== 'chat';
   $('status-dot').hidden = view === 'resources'; $('status-text').hidden = view === 'resources';
   $('list-search').value = '';
-  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? profile(state.detailAgent).name
+  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? detailProfile(state.detailAgent).name
     : view === 'resources' ? state.resources.selected?.name || '资料库' : view === 'graph' ? '知识图谱'
     : state.notePath ? noteTitle(state.notePath) : '知识库';
   renderLists();
@@ -297,7 +303,7 @@ function renderLists() {
   }
   if (!$('session-list').childElementCount) { const empty = document.createElement('p'); empty.className = 'side-empty'; empty.textContent = '暂无对话'; $('session-list').append(empty); }
   $('agent-list').replaceChildren();
-  for (const item of state.agents.filter(a => matches(a.name))) {
+  for (const item of [...state.agents, originalHarness].filter(a => matches(a.name))) {
     const row = sideRow('agent-row', item.name, item.id === state.detailAgent, () => { showAgent(item.id); closeMobileList(); }, item.name[0]);
     row.dataset.agent = item.id; $('agent-list').append(row);
   }
@@ -317,11 +323,25 @@ function renderLists() {
   if (state.view === 'resources') renderResources();
 }
 function showAgent(id) {
-  state.detailAgent = id; const item = profile(id);
+  state.detailAgent = id; const item = detailProfile(id);
+  const upstream = id === originalHarness.id;
   $('agent-name').textContent = item.name; $('agent-avatar').textContent = item.name[0];
-  $('agent-prompt').textContent = item.system;
-  $('agent-permission').textContent = id === 'librarian' && state.permission ? '可编辑' : '只读';
-  $('agent-skills').replaceChildren(...(item.skills || []).map(skill => { const span = document.createElement('span'); span.className = 'skill-chip'; span.textContent = typeof skill === 'string' ? skill : skill.name; return span; }));
+  $('agent-description').textContent = item.description || '';
+  $('agent-description').hidden = !item.description;
+  for (const control of ['agent-permission', 'agent-edit', 'agent-chat', 'agent-harness']) $(control).hidden = upstream;
+  $('harness2-upstream').hidden = !upstream;
+  $('agent-permission').textContent = id === 'librarian' && state.permission ? 'Wiki 可写' : 'Wiki 只读';
+  if (upstream) {
+    endAgentHarnessEdit($('agent-harness'));
+    mountUpstreamHarness2($('harness2-upstream'));
+  } else mountAgentHarness($('agent-harness'), $('agent-edit'), item, state.agents, components => {
+    const reviewEnabled = reviewConfigured(components);
+    state.agents = state.agents.map(agent => agent.id === id ? { ...agent, reviewEnabled } : agent);
+    for (const card of $('conversation').querySelectorAll('.message.assistant')) {
+      const collect = card.querySelector('[data-action=collect]');
+      if (collect && card.dataset.agent === id) collect.hidden = !reviewEnabled;
+    }
+  });
   if (state.view === 'agents') $('current-topic').textContent = item.name;
   renderLists();
 }
@@ -437,6 +457,7 @@ function addActions(card) {
   copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(card.body.textContent); copy.textContent = '已复制'; } catch { copy.textContent = '复制失败'; } }); actions.append(copy);
   if (card.id && card.agentId !== 'librarian') {
     const collect = document.createElement('button'); collect.type = 'button'; collect.textContent = '收录'; collect.dataset.action = 'collect';
+    collect.hidden = profile(card.agentId).reviewEnabled === false;
     collect.addEventListener('click', () => { void collectMessage(card, collect); }); actions.append(collect);
   }
   if (card.agentId === 'taotao') for (const [label, direction] of [['多聊', 'more'], ['少聊', 'less']]) {
@@ -487,8 +508,12 @@ async function loadSession(id, autoRun = false) {
       let research = m.research; if (typeof research === 'string') { try { research = JSON.parse(research); } catch { research = null; } }
       return { role: m.role, content: m.content, agent: m.agent || data.session.agent || 'taotao', id: m.id, research, activity: activityEvents(m.activity), status: m.status };
     });
-    const lastUser = [...state.messages].reverse().find(m => m.role === 'user'); state.topic = lastUser?.content || '';
-    selectAgent(autoRun ? 'librarian' : data.session.agent || state.messages.at(-1)?.agent || 'qa', false);
+    const lastUserIndex = data.messages.findLastIndex(m => m.role === 'user');
+    const lastUser = data.messages[lastUserIndex];
+    const lastReply = data.messages.slice(lastUserIndex + 1).findLast(m => m.role === 'assistant' && m.visible !== 0);
+    state.topic = lastUser?.content || '';
+    selectAgent(autoRun ? 'librarian' : lastUser?.agent || data.session.agent || 'qa', false);
+    state.replyPending = !!lastUser && (!lastReply || lastReply.status !== 'complete' || lastReply.resumable === 1);
     clearConversation(); resetResearch(state.topic);
     for (const message of state.messages) {
       const card = messageCard(message.role, message.content, message.agent, message.id, id);
@@ -822,7 +847,7 @@ function splitSentences(text) {
 function prepareCard(segment) {
   segment.card ||= messageCard('assistant', '', segment.agentId, segment.id);
   if (!segment.card.activity) restoreActivity(segment.card, segment.activities || []);
-  const read = profile(segment.agentId).continuous || $('reply-voice').checked;
+  const read = shouldRead(profile(segment.agentId));
   if (read) {
     segment.card.body.replaceChildren(); segment.spans = segment.sentences.map(text => { const span = document.createElement('span'); span.className = 'sentence'; span.textContent = text; segment.card.body.append(span); return span; });
   } else { renderMarkdown(segment.card.body, segment.text); segment.spans = []; }
@@ -838,7 +863,7 @@ function prepareCard(segment) {
 async function generate(epoch, extra = '', visible = false) {
   if (!isCurrent(epoch)) throw abortError();
   const selected = profile(); const controller = new AbortController(); state.controllers.add(controller);
-  const id = state.keepMemory ? crypto.randomUUID() : null; let webSearch = selected.id === 'summarizer' ? false : $('web-search').checked;
+  const id = state.keepMemory ? crypto.randomUUID() : null; let webSearch = !['summarizer', 'harness2'].includes(selected.id) && $('web-search').checked;
   let research = null, knowledge = null, handoff = null; const activities = new Map();
   const card = visible ? messageCard('assistant', '', selected.id, id) : null;
   if (card) { state.pendingCard = card; ensureActivity(card, { live: true }); status('生成中', 'thinking'); }
@@ -863,7 +888,7 @@ async function generate(epoch, extra = '', visible = false) {
         if (card) { updateActivity(card, data.activity); if (data.activity.state === 'running') status(data.activity.title, 'thinking'); }
       }
       if (data.heartbeat && card?.activity) { card.activity.lastSignal = Date.now(); refreshActivityClock(card.activity); }
-      if (data.memory?.localOnly) webSearch = false;
+      if (data.memory?.localOnly || data.webSearch === false) webSearch = false;
       if (data.research_status) {
         $('research-panel').hidden = false; $('research-status').textContent = ({ planning: '规划中', searching: '查询中', writing: '整理中' })[data.research_status.stage] || '查询中';
         if (data.research_status.query) $('research-query').textContent = data.research_status.query;
@@ -875,7 +900,11 @@ async function generate(epoch, extra = '', visible = false) {
       if (data.knowledge) { knowledge = data.knowledge; if (data.knowledge.mode === 'local' || selected.id === 'librarian') webSearch = false; }
       if (data.handoff) handoff = data.handoff;
       const delta = data.choices?.[0]?.delta?.content; if (typeof delta === 'string') text += delta;
-      if (card) { card.body.textContent = text; card.activity.characters = text.length; refreshActivityClock(card.activity); scrollConversation(); }
+      if (card) {
+        if (typeof delta === 'string') { card.body.textContent = text; card.activity.characters = text.length; }
+        refreshActivityClock(card.activity);
+        if (state.view === 'chat') scrollConversation();
+      }
     }
     while (true) {
       const chunk = await reader.read(); if (!isCurrent(epoch)) { await reader.cancel(); throw abortError(); }
@@ -934,34 +963,44 @@ async function run(epoch) {
         segment.entry.content = segment.text; segment.card.label.textContent = selected.name; state.current = null; state.replyPending = false; state.active = false; status();
         await openHandoff(segment.handoff, epoch); return;
       }
-      const read = selected.continuous || $('reply-voice').checked;
+      const read = shouldRead(selected);
       status(read ? '朗读中' : '已回答', read ? 'speaking' : 'idle'); segment.card.label.textContent = selected.name;
       while (read && segment.index < segment.sentences.length && isCurrent(epoch)) {
         const index = segment.index;
         if (selected.continuous && !state.prefetch && index / segment.sentences.length >= .6) state.prefetch = generate(epoch, segment.text).then(next => ({ segment: next }), error => ({ error }));
-        await speak(segment.sentences[index], epoch, () => { segment.spans.forEach((span, i) => span.classList.toggle('speaking', i === index)); scrollConversation(); });
+        try {
+          await speak(segment.sentences[index], epoch, () => { segment.spans.forEach((span, i) => span.classList.toggle('speaking', i === index)); scrollConversation(); });
+        } catch (error) {
+          if (selected.id !== 'librarian' || error.name === 'AbortError') throw error;
+          break;
+        }
         if (!isCurrent(epoch)) return;
         if (selected.continuous) segment.entry.content += segment.sentences[index]; segment.index++;
         if (segment.id) void memoryApi('playback', { id: segment.id, played: segment.index }, true).catch(() => {});
       }
       if (!isCurrent(epoch)) return;
+      if (selected.id === 'librarian' && read) renderMarkdown(segment.card.body, segment.text);
       segment.spans.forEach(span => span.classList.remove('speaking')); state.count++; $('segment-count').textContent = String(state.count);
       segment.card.label.textContent = `${selected.name}${selected.continuous ? ` · ${state.count}` : ''}`;
       if (segment.knowledge) {
         const actions = segment.card.element.querySelector('.message-actions'); let result = actions.querySelector('.knowledge-result');
         if (!result) { result = document.createElement('span'); result.className = 'action-status knowledge-result'; actions.append(result); }
         const knowledge = segment.knowledge;
-        result.textContent = knowledge.mode === 'local' ? '本地' : knowledge.saved ? knowledge.mode === 'maintenance' ? '已整理' : ['部分收录', '保留分歧'].includes(knowledge.outcome) ? knowledge.outcome : '已收录' : knowledge.permissionRequired ? '未授权' : knowledge.error ? '存档失败' : knowledge.mode === 'maintenance' ? '未修改' : knowledge.outcome === '待补充' ? '待补充' : '未收录';
+        result.textContent = knowledge.pending ? '待继续' : knowledge.mode === 'local' ? '本地' : knowledge.saved ? '已收录' : knowledge.permissionRequired ? '未授权' : knowledge.error ? '存档失败' : knowledge.mode === 'maintenance' ? '未修改' : knowledge.outcome === '待补充' ? '待补充' : '未收录';
         if (knowledge.error) errorMessage(knowledge.error);
       }
       record(selected.continuous ? 'segment_complete' : 'answer_complete'); state.current = null;
-      if (!selected.continuous) { state.replyPending = false; state.active = false; status('已回答'); return; }
+      if (!selected.continuous) { state.replyPending = segment.knowledge?.pending === true; state.active = false; status(state.replyPending ? '待继续' : '已回答'); return; }
     }
   } catch (error) { if (!isCurrent(epoch)) return; halt('error'); errorMessage(error.name === 'TypeError' ? '网络连接失败' : error.message); status('已停止', 'error'); }
 }
+function shouldRead(agent) {
+  if (agent.id === 'librarian' && (!synth || !window.SpeechSynthesisUtterance)) return false;
+  return agent.continuous || $('reply-voice').checked;
+}
 function start() {
   if (!state.connected || !state.topic || state.active || (!profile().continuous && !state.replyPending)) return;
-  if ((profile().continuous || $('reply-voice').checked) && (!synth || !window.SpeechSynthesisUtterance)) { errorMessage('浏览器不支持朗读'); return; }
+  if (shouldRead(profile()) && (!synth || !window.SpeechSynthesisUtterance)) { errorMessage('浏览器不支持朗读'); return; }
   errorMessage(); state.active = true; const epoch = ++state.epoch; status('生成中', 'thinking'); void run(epoch);
 }
 
@@ -1047,7 +1086,6 @@ document.addEventListener('click', event => { if (!event.target.closest('.compos
 $('pause-btn').addEventListener('click', () => halt()); $('resume-btn').addEventListener('click', start);
 $('new-chat').addEventListener('click', newChat);
 for (const view of ['chat', 'agents', 'library', 'resources', 'graph']) $(`nav-${view}`).addEventListener('click', () => {
-  halt('navigation');
   if (view === 'resources') { stopExtraction(); state.resources.selected = null; state.resources.request++; }
   setView(view);
   // 图谱本身就是要看全屏，窄屏进来不自动弹出笔记列表，免得把画布盖住。
@@ -1125,7 +1163,8 @@ $('delete-session').addEventListener('click', async () => { if (!state.snapshot.
 window.addEventListener('pagehide', () => { halt('leave'); stopExtraction(); });
 let checkingService = false;
 setInterval(async () => {
-  if (!state.active || checkingService) return; checkingService = true; const epoch = state.epoch;
+  // The administrator stream already sends heartbeats and reports disconnects.
+  if (!state.active || state.agent === 'librarian' || checkingService) return; checkingService = true; const epoch = state.epoch;
   try { const response = await fetch('/health', { signal: AbortSignal.timeout(1500) }); if (!response.ok || (await response.json()).app !== 'taotao-local') throw new Error(); }
   catch { if (isCurrent(epoch)) { halt('server_closed'); state.connected = false; $('connection-status').textContent = '已关闭'; status('已关闭'); } }
   finally { checkingService = false; }

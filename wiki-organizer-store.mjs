@@ -74,7 +74,7 @@ export function refreshWikiIndex(m, originalIndex, write=(path,text)=>m.atomic(p
   m.db.prepare("INSERT OR REPLACE INTO meta VALUES('wiki-organizer-index-path',?)").run(p);
   return p;
 }
-export function commitWiki(m,{agent,writes=[],processed=[],readHashes=[],retryPaths=[],signal,generation,sourceIds=[],sourceSnapshots=[]}) {
+export function commitWiki(m,{agent,writes=[],processed=[],readHashes=[],retryPaths=[],signal,generation,sourceIds=[],sourceSnapshots=[],onCommit}) {
   signal?.throwIfAborted();if(agent!=='librarian' || !m.knowledgePermission()) fail('只有已授权的知识库管理员可以整理 Wiki。',403);
   if(generation!==undefined && m.generation!==generation) fail('整理期间知识库已更改，请重新整理。');
   const rows=new Map(m.db.prepare('SELECT * FROM pages').all().map(r=>[r.path,r]));
@@ -134,6 +134,7 @@ export function commitWiki(m,{agent,writes=[],processed=[],readHashes=[],retryPa
       set(log,old.trimEnd()+'\n\n- '+updated+' · '+detail+'\n');
     }
     signal?.throwIfAborted();
+    onCommit?.(written);
   });}catch(err){for(const {p,before,after} of installed.reverse()){const f=checkedFile(m,p);if(digest(f)!==after)continue;if(before===null)unlinkSync(f);else m.atomic(p,before);}throw err;}
   return {written};
 }

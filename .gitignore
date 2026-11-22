@@ -4,11 +4,13 @@ data/
 资料库/
 backups/
 test-results/
+/.env
 
 # 依赖与缓存
 node_modules/
 __pycache__/
 *.log
+/vendor/harness2/
 
 # 项目文档（含私人信息，不推送）
 *.md

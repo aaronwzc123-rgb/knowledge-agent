@@ -4,6 +4,7 @@ import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { refreshWikiIndex, wikiSourcePath } from './wiki-organizer-store.mjs';
 import { AGENTS, getAgent } from './agents.mjs';
+import { readAgentSystem, seedAgentHarness } from './agent-harness.mjs';
 import { renderKnowledgeNote, queryTerms, selectKnowledgeClaims } from './knowledge-format.mjs';
 import { COLLECTIONS, DEFAULT_GUIDELINES, normalizeClaimPolicy, claimPolicyError } from './knowledge-policy.mjs';
 
@@ -136,6 +137,12 @@ export class MemoryStore {
     if (!this.db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'activity')) {
       this.db.exec("ALTER TABLE messages ADD COLUMN activity TEXT NOT NULL DEFAULT '[]'");
     }
+    if (!this.db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'resumable')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN resumable INTEGER NOT NULL DEFAULT 0');
+    }
+    this.db.exec(`CREATE TABLE IF NOT EXISTS topic_research(
+      message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE, checkpoint TEXT NOT NULL
+    )`);
     if (!this.db.prepare('PRAGMA table_info(knowledge_sources)').all().some(column => column.name === 'suppressed')) {
       this.db.exec('ALTER TABLE knowledge_sources ADD COLUMN suppressed INTEGER NOT NULL DEFAULT 0');
     }
@@ -152,6 +159,7 @@ export class MemoryStore {
     // 每个助手的工作指导都放在记忆库里，用户可以直接改，下一次调用立即生效。
     for (const agent of Object.values(AGENTS)) {
       if (!existsSync(join(this.vault, agent.guidance))) this.atomic(agent.guidance, `---\nagent: ${agent.id}\nupdated: ${now()}\n---\n\n${agent.system}\n`);
+      seedAgentHarness(this, agent);
     }
     let newCategories = false;
     for (const name of categoryNames) {
@@ -221,15 +229,16 @@ export class MemoryStore {
     if (!result.changes) fail('这段对话已删除或停止保存。', 409);
   }
 
-  finish(id, status) {
+  finish(id, status, resumable) {
     const row = this.db.prepare('SELECT session_id FROM messages WHERE id=?').get(id);
     if (!row) return;
     if (status !== 'complete') this.settleActivities(id, status);
     this.db.prepare('UPDATE messages SET status=? WHERE id=?').run(status, id);
+    if (typeof resumable === 'boolean') this.db.prepare('UPDATE messages SET resumable=? WHERE id=?').run(Number(resumable), id);
     this.exportSession(row.session_id);
   }
 
-  activity(id, input) {
+  activity(id, input, { exportNow = true } = {}) {
     if (!validId(id)) fail('聊天编号无效。');
     const message = this.db.prepare('SELECT role,activity,session_id FROM messages WHERE id=?').get(id);
     if (!message) return;
@@ -240,7 +249,7 @@ export class MemoryStore {
     if (index >= 0) events[index] = event;
     else events.push(event);
     this.db.prepare('UPDATE messages SET activity=? WHERE id=?').run(JSON.stringify(events.slice(-60)), id);
-    this.exportSession(message.session_id);
+    if (exportNow) this.exportSession(message.session_id);
     return event;
   }
 
@@ -460,12 +469,7 @@ export class MemoryStore {
 
   // 每个助手的工作指导文件；文件名记录在 agents.mjs，内容归用户所有。
   agentGuidance(id) {
-    try {
-      const agent = getAgent(id);
-      const full = join(this.vault, agent.guidance);
-      if (!existsSync(full)) return '';
-      return readFileSync(full, 'utf8').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim().slice(0, 12000);
-    } catch { return ''; }
+    return readAgentSystem(this, id);
   }
 
   saveKnowledgeGuidelines({ agent, content } = {}) {
