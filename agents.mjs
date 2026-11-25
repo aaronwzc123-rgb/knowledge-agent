@@ -46,7 +46,49 @@ export const AGENTS = Object.freeze({
     system: '你是知识库管理员。知识点编辑负责一页一问，首段直接回答，保留证据、归属与必要条件；重问复用，补充更新同一页。目录编辑负责可独立阅读的主题导读，在读者会追问之处链接实际笔记，只在有依据时建立跨主题联系。原始材料保持可回溯；没有独立问题不建新页，没有值得解释的关系不建导读。用户直接询问时优先复用本地原文。',
     researchInstruction: '按原文整理，只为公开问题的缺口查找原始资料。',
   }),
+  optimist: Object.freeze({
+    id: 'optimist', name: '乐观主义者', guidance: '指导/乐观主义者.md', continuous: false, webSearch: false,
+    aliases: ['乐观'], maxTokens: 2400, temperature: 0.6,
+    system: '你是乐观主义者。寻找被低估的机会、有利条件和可能的上行空间。说明乐观预期依赖哪些假设，提出能低成本验证机会的小实验。正面回应合理的风险，允许证据推翻你的预期。不把愿望当成事实，也不保证成功。',
+  }),
+  pessimist: Object.freeze({
+    id: 'pessimist', name: '悲观主义者', guidance: '指导/悲观主义者.md', continuous: false, webSearch: false,
+    aliases: ['悲观'], maxTokens: 2400, temperature: 0.6,
+    system: '你是悲观主义者。做事前验尸，找出最可能失败的假设、被低估的成本和难以逆转的损失。区分发生概率和后果严重程度，说明什么证据、缓解措施或止损条件能让你支持方案。不夸大风险，不为反对而反对。',
+  }),
+  realist: Object.freeze({
+    id: 'realist', name: '现实主义者', guidance: '指导/现实主义者.md', continuous: false, webSearch: false,
+    aliases: ['现实'], maxTokens: 2400, temperature: 0.6,
+    system: '你是现实主义者。以现有资源、时间、证据和约束评估方案。明确哪些取舍必须做，给出能执行的第一步、验收条件和调整时点。区分已知事实与需要核实的假设，避免用未经证实的数字制造精确感。',
+  }),
+  idealist: Object.freeze({
+    id: 'idealist', name: '理想主义者', guidance: '指导/理想主义者.md', continuous: false, webSearch: false,
+    aliases: ['理想'], maxTokens: 2400, temperature: 0.6,
+    system: '你是理想主义者。先问真正值得实现的目标是什么，关注长期价值、原则、一致性和对他人的影响。指出哪些底线应保留，哪些路径可以灵活调整，给出连接眼前行动和长期目标的做法。允许其他人提出更可行的路径。',
+  }),
 });
+
+export const agentNames = agent => [agent.name, agent.id, ...(agent.aliases || [])];
+const mentions = new Map(Object.values(AGENTS).flatMap(agent => agentNames(agent).map(name => [name.toLowerCase(), agent.id])));
+const mentionNames = [...mentions.keys()].sort((a, b) => b.length - a.length).map(name => {
+  const literal = name.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
+  return /^[\w-]+$/.test(name) ? literal + '(?![\\w.-])' : literal;
+});
+const mentionPattern = new RegExp('[@＠](' + mentionNames.join('|') + ')', 'giu');
+
+export function parseAgentMentions(text) {
+  const ids = new Set();
+  const content = text.replace(mentionPattern, (_, name) => {
+    ids.add(mentions.get(name.toLowerCase()));
+    return ' ';
+  }).trim();
+  return { ids: [...ids], text: content };
+}
+
+export function isDiscussionGroup(ids) {
+  return Array.isArray(ids) && ids.length >= 2 && ids.length <= Object.keys(AGENTS).length
+    && new Set(ids).size === ids.length && ids.every(id => typeof id === 'string' && Object.hasOwn(AGENTS, id));
+}
 
 export function getAgent(id = 'taotao') {
   if (typeof id !== 'string' || !Object.hasOwn(AGENTS, id)) {

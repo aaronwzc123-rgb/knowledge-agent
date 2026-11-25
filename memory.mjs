@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, readdir
 import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { refreshWikiIndex, wikiSourcePath } from './wiki-organizer-store.mjs';
-import { AGENTS, getAgent } from './agents.mjs';
+import { AGENTS, getAgent, isDiscussionGroup, parseAgentMentions } from './agents.mjs';
 import { readAgentSystem, seedAgentHarness } from './agent-harness.mjs';
 import { renderKnowledgeNote, queryTerms, selectKnowledgeClaims } from './knowledge-format.mjs';
 import { COLLECTIONS, DEFAULT_GUIDELINES, normalizeClaimPolicy, claimPolicyError } from './knowledge-policy.mjs';
@@ -140,6 +140,12 @@ export class MemoryStore {
     if (!this.db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'resumable')) {
       this.db.exec('ALTER TABLE messages ADD COLUMN resumable INTEGER NOT NULL DEFAULT 0');
     }
+    if (!this.db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'participants')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!this.db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'workflow')) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN workflow TEXT NOT NULL DEFAULT ''");
+    }
     this.db.exec(`CREATE TABLE IF NOT EXISTS topic_research(
       message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE, checkpoint TEXT NOT NULL
     )`);
@@ -196,30 +202,45 @@ export class MemoryStore {
     catch (err) { this.db.exec('ROLLBACK'); throw err; }
   }
 
-  saveUser({ sessionId, id, content, agent = 'taotao' }) {
+  saveUser({ sessionId, id, content, agent = 'taotao', participants = [] }, workflow = null, replyId = null) {
     getAgent(agent);
     if (!validId(sessionId) || !validId(id) || typeof content !== 'string' || !content.trim() || content.length > 4000) fail('聊天记录格式不正确。');
+    const group = isDiscussionGroup(participants) && participants[0] === agent;
+    if (!group && (!Array.isArray(participants) || participants.length)) fail('群聊成员不正确。');
+    const roster = JSON.stringify(participants);
+    const workflowData = workflow ? JSON.stringify(workflow) : '';
+    if (workflow && (!validId(replyId) || replyId === id || group)) fail('工作流对话参数不正确。');
     const old = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
     if (old) {
-      if (old.session_id !== sessionId || old.content !== content || old.role !== 'user' || old.agent !== agent) fail('消息编号重复，请重新发送。', 409);
+      if (old.session_id !== sessionId || old.content !== content || old.role !== 'user' || old.agent !== agent || old.participants !== roster
+        || old.workflow !== workflowData) fail('消息编号重复，请重新发送。', 409);
       return { id, saved: true };
     }
+    const title = (group ? parseAgentMentions(content).text || content : content).split(/\r?\n/, 1)[0].slice(0, 80);
     this.transaction(() => {
-      this.db.prepare('INSERT OR IGNORE INTO sessions(id,title,created,agent) VALUES(?,?,?,?)').run(sessionId, content.split(/\r?\n/, 1)[0].slice(0, 80), now(), agent);
+      this.db.prepare('INSERT OR IGNORE INTO sessions(id,title,created,agent) VALUES(?,?,?,?)').run(sessionId, title, now(), agent);
       this.db.prepare('UPDATE sessions SET agent=? WHERE id=?').run(agent, sessionId);
-      this.db.prepare("INSERT INTO messages(id,session_id,role,content,created,status,agent) VALUES(?,?,'user',?,?,'complete',?)").run(id, sessionId, content, now(), agent);
+      this.db.prepare("INSERT INTO messages(id,session_id,role,content,created,status,agent,participants,workflow) VALUES(?,?,'user',?,?,'complete',?,?,?)")
+        .run(id, sessionId, content, now(), agent, roster, workflowData);
       this.db.prepare("INSERT INTO sources(id,session_id,kind,content,ref,created) VALUES(?,?,'user',?,?,?)").run(id, sessionId, content, `raw/对话/${sessionId}#^${id}`, now());
+      if (workflow) this.db.prepare("INSERT INTO messages(id,session_id,role,created,status,agent,workflow) VALUES(?,?,'assistant',?,'generating',?,?)")
+        .run(replyId, sessionId, now(), agent, workflowData);
     });
     this.exportSession(sessionId);
     return { id, saved: true };
   }
 
-  beginAssistant(sessionId, id, visible, agent = 'taotao') {
+  beginAssistant(sessionId, id, visible, agent = 'taotao', discussion = null) {
     getAgent(agent);
     const session = validId(sessionId) && this.db.prepare('SELECT agent FROM sessions WHERE id=?').get(sessionId);
     if (!validId(id) || !session) fail('请先保存用户消息，再开始回答。');
-    const lastUser = this.db.prepare("SELECT agent FROM messages WHERE session_id=? AND role='user' ORDER BY seq DESC LIMIT 1").get(sessionId);
-    if (!lastUser || lastUser.agent !== agent) fail('请先向这个助手发送消息。', 409);
+    const lastUser = this.db.prepare("SELECT id,agent,participants,workflow FROM messages WHERE session_id=? AND role='user' ORDER BY seq DESC LIMIT 1").get(sessionId);
+    if (discussion) {
+      if (lastUser?.id !== discussion.userId || lastUser.participants !== JSON.stringify(discussion.participants)
+        || !discussion.participants.includes(agent)) fail('群聊成员或讨论主题已变更，请重新发送。', 409);
+    } else if (lastUser?.agent !== agent || lastUser.participants !== '[]' || lastUser.workflow) {
+      fail('请先向这个助手发送消息。', 409);
+    }
     if (this.db.prepare('SELECT id FROM messages WHERE id=?').get(id)) fail('回答编号重复，请重试。', 409);
     this.db.prepare("INSERT INTO messages(id,session_id,role,created,status,visible,agent) VALUES(?,?,'assistant',?,'generating',?,?)").run(id, sessionId, now(), visible ? 1 : 0, agent);
   }
@@ -339,7 +360,11 @@ export class MemoryStore {
       for (const message of messages) {
         const draft = !message.visible;
         if (draft) content += '<details><summary>预先生成的草稿 · 尚未展示</summary>\n\n';
-        content += `## ${message.role === 'user' ? '你' : getAgent(message.agent).name} · ${message.created}\n\n${message.content || '（未收到正文）'}\n\n^${message.id}\n\n`;
+        const participants = JSON.parse(message.participants);
+        const workflowName = message.workflow ? inlineMarkdown(JSON.parse(message.workflow).name) : '';
+        const speaker = message.role !== 'user' ? workflowName || getAgent(message.agent).name
+          : workflowName ? '你 → ' + workflowName : participants.length ? '你 → ' + participants.map(agent => getAgent(agent).name).join('、') : '你';
+        content += `## ${speaker} · ${message.created}\n\n${message.content || '（未收到正文）'}\n\n^${message.id}\n\n`;
         if (message.role === 'assistant') content += `生成：${message.status === 'complete' ? '完成' : '未完成'}；已确认朗读 ${message.played} 句；${draft ? '尚未展示' : '已展示'}。\n\n`;
         if (message.research) {
           const r = JSON.parse(message.research);

@@ -1,19 +1,22 @@
-import { AGENTS, getAgent, conversationContext, reviewConfigured } from './agents.mjs';
+import { AGENTS, agentNames, getAgent, conversationContext, parseAgentMentions, reviewConfigured } from './agents.mjs';
 import { createKnowledgeGraph } from './graph.js';
 import { endAgentHarnessEdit, mountAgentHarness } from './agent-editor.js';
 import { mountUpstreamHarness2 } from './harness2-panel.js';
+import { mountWorkflowEditor, streamWorkflow } from './workflow-editor.js';
+import { formatWorkflowOutput } from './workflow-schema.mjs';
 
 const $ = id => document.getElementById(id);
 const synth = window.speechSynthesis;
 const state = {
   view: 'chat', agent: 'qa', detailAgent: 'qa', agents: Object.values(AGENTS),
   sessionId: crypto.randomUUID(), title: '新对话', topic: '', messages: [],
+  participants: [], runningWorkflow: false,
   epoch: 0, active: false, connected: false, saving: false, memoryReady: false,
   keepMemory: true, permission: false, controllers: new Set(), current: null,
   prefetch: null, pendingCard: null, cancelSpeech: null, count: 0,
   voices: [], voiceChosen: false, snapshot: { sessions: [], pages: [] },
   research: { task: '', queries: [], seenUrls: [], notes: '', round: 0 },
-  notePath: '', noteVersion: 0, noteTrail: [], noteOrigin: 'library', replyPending: false, menuIndex: 0,
+  notePath: '', noteVersion: 0, noteTrail: [], noteOrigin: 'library', replyPending: false,
   graph: { loaded: false, loading: false, nodes: [] },
   resources: { files: [], folders: [{ path: '', name: '资料库' }], folder: '', currentFolder: '', loaded: false, selected: null, request: 0, version: null, page: null, locator: null, uploading: false, extractController: null },
   attachments: [], resourceIds: [], attachmentNotice: '', pickerSelection: new Set(),
@@ -41,8 +44,10 @@ function status(text = state.connected ? '已连接' : '未连接', mode = 'idle
   $('status-dot').dataset.state = mode;
   document.body.dataset.state = mode;
   $('pause-btn').disabled = !state.active;
+  $('pause-btn').textContent = state.runningWorkflow ? '停止工作流' : state.participants.length ? '停止讨论' : profile().continuous ? '暂停' : '停止';
+  $('resume-btn').hidden = state.participants.length > 0;
   $('resume-btn').disabled = state.active || !state.connected || !state.topic || (!profile().continuous && !state.replyPending);
-  $('send-btn').disabled = !state.connected || state.saving;
+  updateSendButton();
 }
 async function apiError(response) {
   let data; try { data = await response.json(); } catch {}
@@ -56,6 +61,14 @@ async function jsonApi(path, body, options = {}) {
   return response.json();
 }
 const memoryApi = (action, body, keepalive = false) => jsonApi(`/api/memory/${action}`, body, { keepalive });
+const workflowConnection = () => ({ apiKey: state.connected ? $('api-key').value.trim() : '', model: $('model').value });
+function openConnectionSettings() { $('settings-dialog').showModal(); $('api-key').focus(); }
+const workflowEditor = mountWorkflowEditor({
+  jsonApi, apiError,
+  getConnection: workflowConnection, openSettings: openConnectionSettings,
+  setTitle: title => { if (state.view === 'workflow') $('current-topic').textContent = title; },
+  closeList: closeMobileList,
+});
 const liveActivities = new Set();
 const activityState = { running: '进行中', complete: '完成', failed: '失败', cancelled: '已停止' };
 function elapsedText(milliseconds) {
@@ -164,6 +177,8 @@ function record(type, payload = {}) {
 
 function halt(reason = 'pause', log = true) {
   const wasActive = state.active;
+  const wasWorkflow = state.runningWorkflow;
+  state.runningWorkflow = false;
   state.active = false; state.saving = false; state.epoch++;
   for (const view of [...liveActivities]) finishActivity(view.card, 'cancelled');
   for (const controller of state.controllers) controller.abort();
@@ -172,50 +187,53 @@ function halt(reason = 'pause', log = true) {
   if (state.pendingCard) {
     if (state.pendingCard.body.textContent || state.pendingCard.activity) state.pendingCard.label.textContent = `${state.pendingCard.agentName} · 未完成`;
     else state.pendingCard.element.remove();
+    if (state.pendingCard.workflow) addActions(state.pendingCard);
     state.pendingCard = null;
   }
   document.querySelectorAll('.sentence.speaking').forEach(span => span.classList.remove('speaking'));
   if (wasActive && log) record(reason);
-  status(wasActive ? '已暂停' : state.connected ? '已连接' : '未连接');
+  status(wasActive ? wasWorkflow ? '工作流已停止' : state.participants.length ? '讨论已停止' : '已暂停' : state.connected ? '已连接' : '未连接');
 }
 
 function selectAgent(id, stop = true) {
   profile(id);
   if (id !== 'summarizer' && state.attachments.length) { state.attachments = []; state.resourceIds = []; state.attachmentNotice = '已移除资料'; renderAttachments(); }
-  if (state.agent !== id && stop) { halt('agent_switch'); state.current = null; state.replyPending = false; state.topic = ''; }
+  if (stop && (state.agent !== id || state.participants.length)) {
+    halt('agent_switch'); state.participants = []; state.current = null; state.replyPending = false; state.topic = '';
+  }
   state.agent = id;
-  $('agent-picker').textContent = `@${profile().name}`;
   $('settings-agent').value = id;
   $('web-search').disabled = id === 'harness2';
   $('web-search').checked = id !== 'harness2' && searchPreference(id);
-  $('pause-btn').textContent = profile().continuous ? '暂停' : '停止';
   $('resume-btn').textContent = profile().continuous || id === 'librarian' ? '继续' : '重试';
   persistSetting('taotao-agent', id);
-  status();
+  renderDiscussion(); status();
 }
 function setView(view) {
   if (state.view === 'agents' && view !== 'agents') endAgentHarnessEdit($('agent-harness'));
-  if (state.view !== view && !(state.active && state.agent === 'librarian')) halt('navigation');
+  if (state.view !== view && !(state.active && !state.runningWorkflow && !state.participants.length && state.agent === 'librarian')) halt('navigation');
   if (view !== 'resources') stopExtraction();
   state.view = view;
-  for (const name of ['chat', 'agents', 'library', 'resources', 'graph']) {
+  for (const name of ['chat', 'agents', 'workflow', 'library', 'resources', 'graph']) {
     $(`nav-${name}`).classList.toggle('selected', name === view);
     if (name === view) $(`nav-${name}`).setAttribute('aria-current', 'page');
     else $(`nav-${name}`).removeAttribute('aria-current');
     $(`${name}-view`).hidden = name !== view;
   }
   $('session-list').hidden = view !== 'chat'; $('agent-list').hidden = view !== 'agents';
+  $('workflow-list').hidden = $('new-workflow').hidden = view !== 'workflow';
   $('wiki-list').hidden = !['library', 'graph'].includes(view);
   $('resource-list').hidden = view !== 'resources';
-  $('list-title').textContent = ({ chat: '对话', agents: 'Agent', library: '知识库', resources: '资料库', graph: '图谱' })[view];
+  $('list-title').textContent = ({ chat: '对话', agents: 'Agent', workflow: '工作流', library: '知识库', resources: '资料库', graph: '图谱' })[view];
   $('new-chat').hidden = view !== 'chat'; $('chat-menu').hidden = view !== 'chat';
   $('status-dot').hidden = view === 'resources'; $('status-text').hidden = view === 'resources';
   $('list-search').value = '';
   $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? detailProfile(state.detailAgent).name
-    : view === 'resources' ? state.resources.selected?.name || '资料库' : view === 'graph' ? '知识图谱'
+    : view === 'resources' ? state.resources.selected?.name || '资料库' : view === 'graph' ? '知识图谱' : view === 'workflow' ? '工作流'
     : state.notePath ? noteTitle(state.notePath) : '知识库';
   renderLists();
   if (view === 'agents') showAgent(state.detailAgent);
+  if (view === 'workflow') void workflowEditor.open();
   if (view === 'graph') void loadGraph();
   if (view === 'library' && !state.notePath) {
     $('knowledge-content').replaceChildren(); const empty = document.createElement('div'); empty.className = 'document-empty'; empty.textContent = '知识库'; $('knowledge-content').append(empty);
@@ -295,6 +313,7 @@ function sideRow(className, title, selected, onClick, icon = '') {
 }
 function renderLists() {
   const search = $('list-search').value.trim().toLocaleLowerCase();
+  if (state.view === 'workflow') { workflowEditor.filter(search); return; }
   const matches = value => String(value).toLocaleLowerCase().includes(search);
   $('session-list').replaceChildren();
   for (const session of state.snapshot.sessions.filter(s => matches(s.title))) {
@@ -356,26 +375,29 @@ function resetResearch(task = '') {
 function newChat() {
   halt('reset'); state.sessionId = crypto.randomUUID(); state.title = '新对话'; state.topic = ''; state.messages = [];
   state.attachments = []; state.resourceIds = []; state.attachmentNotice = ''; renderAttachments();
-  state.current = null; state.replyPending = false; state.count = 0;
+  state.current = null; state.replyPending = false; state.count = 0; state.participants = [];
   clearConversation(); resetResearch(); $('topic').value = ''; $('segment-count').textContent = '0';
+  closeMentionMenu(); renderDiscussion(); status();
   errorMessage(); setView('chat'); closeMobileList(); $('topic').focus();
 }
 
 function scrollConversation(force = false) {
   const view = $('conversation'); if (force || view.scrollHeight - view.scrollTop - view.clientHeight < 180) view.scrollTop = view.scrollHeight;
 }
-function messageCard(role, text = '', agentId = state.agent, id = null, sessionId = state.sessionId) {
+function messageCard(role, text = '', agentId = state.agent, id = null, sessionId = state.sessionId, workflow = null) {
   $('welcome').hidden = true;
   const element = document.createElement('article'); element.className = `message ${role}`;
   if (id) element.dataset.messageId = id;
   element.dataset.agent = agentId;
+  if (workflow) element.dataset.workflow = workflow.id;
+  const name = workflow?.name || profile(agentId).name;
   const meta = document.createElement('div'); meta.className = 'message-meta';
-  const avatar = document.createElement('span'); avatar.className = 'message-avatar'; avatar.textContent = role === 'user' ? '你' : profile(agentId).name[0];
-  const label = document.createElement('span'); label.textContent = role === 'user' ? '你' : profile(agentId).name;
+  const avatar = document.createElement('span'); avatar.className = 'message-avatar'; avatar.textContent = role === 'user' ? '你' : workflow ? '⑂' : name[0];
+  const label = document.createElement('span'); label.textContent = role === 'user' ? '你' : name;
   const body = document.createElement('div'); body.className = 'message-body streaming'; body.textContent = text;
   meta.append(avatar, label); element.append(meta, body); $('conversation').append(element);
   scrollConversation();
-  return { element, body, label, agentName: profile(agentId).name, agentId, id, sessionId };
+  return { element, body, label, agentName: name, agentId, id, sessionId, workflow };
 }
 
 // All Markdown is built with DOM text nodes; notes never execute HTML or load remote images.
@@ -455,12 +477,20 @@ function addActions(card) {
   const actions = document.createElement('div'); actions.className = 'message-actions';
   const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = '复制';
   copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(card.body.textContent); copy.textContent = '已复制'; } catch { copy.textContent = '复制失败'; } }); actions.append(copy);
-  if (card.id && card.agentId !== 'librarian') {
+  if (card.workflow) {
+    const details = document.createElement('button'); details.type = 'button'; details.textContent = '查看运行';
+    details.addEventListener('click', () => {
+      setView('workflow');
+      void workflowEditor.openExecution(card.workflow.id, card.workflow.runId);
+    });
+    actions.append(details);
+  }
+  if (card.id && !card.workflow && card.agentId !== 'librarian') {
     const collect = document.createElement('button'); collect.type = 'button'; collect.textContent = '收录'; collect.dataset.action = 'collect';
     collect.hidden = profile(card.agentId).reviewEnabled === false;
     collect.addEventListener('click', () => { void collectMessage(card, collect); }); actions.append(collect);
   }
-  if (card.agentId === 'taotao') for (const [label, direction] of [['多聊', 'more'], ['少聊', 'less']]) {
+  if (!card.workflow && card.agentId === 'taotao') for (const [label, direction] of [['多聊', 'more'], ['少聊', 'less']]) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
     button.addEventListener('click', () => { record('feedback', { direction, excerpt: card.body.textContent.slice(0, 100) }); button.textContent = '已记录'; }); actions.append(button);
   }
@@ -504,28 +534,33 @@ async function loadSession(id, autoRun = false) {
     if (epoch !== state.epoch) return;
     if (!data.session) throw new Error('对话不存在');
     state.sessionId = id; state.title = data.session.title; state.current = null; state.count = 0; state.replyPending = false;
-    state.messages = data.messages.filter(m => m.visible !== 0 && (m.content || m.role === 'assistant' && activityEvents(m.activity).length)).map(m => {
+    state.messages = data.messages.filter(m => m.visible !== 0 && (m.content || m.workflow || m.role === 'assistant' && activityEvents(m.activity).length)).map(m => {
       let research = m.research; if (typeof research === 'string') { try { research = JSON.parse(research); } catch { research = null; } }
-      return { role: m.role, content: m.content, agent: m.agent || data.session.agent || 'taotao', id: m.id, research, activity: activityEvents(m.activity), status: m.status };
+      return { role: m.role, content: m.content, agent: m.agent || data.session.agent || 'taotao', id: m.id, research,
+        workflow: m.workflow ? JSON.parse(m.workflow) : null, activity: activityEvents(m.activity), status: m.status };
     });
     const lastUserIndex = data.messages.findLastIndex(m => m.role === 'user');
     const lastUser = data.messages[lastUserIndex];
     const lastReply = data.messages.slice(lastUserIndex + 1).findLast(m => m.role === 'assistant' && m.visible !== 0);
-    state.topic = lastUser?.content || '';
+    state.participants = autoRun ? [] : JSON.parse(lastUser?.participants || '[]');
+    state.topic = lastUser?.workflow ? '' : lastUser?.content || '';
+    $('topic').value = ''; closeMentionMenu();
     selectAgent(autoRun ? 'librarian' : lastUser?.agent || data.session.agent || 'qa', false);
-    state.replyPending = !!lastUser && (!lastReply || lastReply.status !== 'complete' || lastReply.resumable === 1);
+    state.replyPending = !lastUser?.workflow && !state.participants.length && !!lastUser && (!lastReply || lastReply.status !== 'complete' || lastReply.resumable === 1);
     clearConversation(); resetResearch(state.topic);
     for (const message of state.messages) {
-      const card = messageCard(message.role, message.content, message.agent, message.id, id);
+      const card = messageCard(message.role, message.content, message.agent, message.id, id, message.workflow);
       if (message.role === 'user' && /resource[:=]/.test(message.content)) renderMarkdown(card.body, message.content);
       if (message.role === 'assistant') {
         renderMarkdown(card.body, message.content);
         restoreActivity(card, message.activity, message.status === 'complete' ? 'complete' : message.activity.some(event => event.state === 'failed') ? 'failed' : 'cancelled');
         if (message.research?.sources) renderSources(card, message.research);
-        if (message.content) { addActions(card); state.count++; }
+        if (message.workflow && message.status !== 'complete') card.label.textContent += ' · 未完成';
+        if (message.content || message.workflow) addActions(card);
+        if (message.content) state.count++;
       }
     }
-    $('segment-count').textContent = String(state.count); $('topic').value = '';
+    $('segment-count').textContent = String(state.count);
     errorMessage(); setView('chat'); closeMobileList(); scrollConversation(true); status();
     if (autoRun && lastUser && data.messages.at(-1)?.role === 'user') { state.replyPending = true; start(); }
   } catch (error) { if (epoch === state.epoch) errorMessage(error.message); }
@@ -860,18 +895,18 @@ function prepareCard(segment) {
   }
 }
 
-async function generate(epoch, extra = '', visible = false) {
+async function generate(epoch, extra = '', visible = false, group = null) {
   if (!isCurrent(epoch)) throw abortError();
-  const selected = profile(); const controller = new AbortController(); state.controllers.add(controller);
-  const id = state.keepMemory ? crypto.randomUUID() : null; let webSearch = !['summarizer', 'harness2'].includes(selected.id) && $('web-search').checked;
-  let research = null, knowledge = null, handoff = null; const activities = new Map();
+  const selected = group?.selected || profile(); const controller = new AbortController(); state.controllers.add(controller);
+  const id = state.keepMemory ? crypto.randomUUID() : null; let webSearch = !group && !['summarizer', 'harness2'].includes(selected.id) && $('web-search').checked;
+  let research = null, knowledge = null, handoff = null, decision = null; const activities = new Map();
   const card = visible ? messageCard('assistant', '', selected.id, id) : null;
-  if (card) { state.pendingCard = card; ensureActivity(card, { live: true }); status('生成中', 'thinking'); }
+  if (card) { state.pendingCard = card; ensureActivity(card, { live: true }); status(group ? `${selected.name}发言中` : '生成中', 'thinking'); }
   try {
     const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
       body: JSON.stringify({ agent: selected.id, apiKey: $('api-key').value.trim(), model: $('model').value,
-        messages: conversationContext(selected.id, state.messages, extra), webSearch,
-        ...(state.resourceIds.length ? { resourceIds: state.resourceIds } : {}),
+        messages: group?.messages || conversationContext(selected.id, state.messages, extra), webSearch,
+        ...(group ? { discussion: group.discussion } : state.resourceIds.length ? { resourceIds: state.resourceIds } : {}),
         ...(id ? { memory: { sessionId: state.sessionId, id, visible, curate: false } } : {}),
         ...(webSearch ? { research: state.research } : {}),
       }),
@@ -885,7 +920,7 @@ async function generate(epoch, extra = '', visible = false) {
       if (data.activity) {
         activities.set(data.activity.id, { ...activities.get(data.activity.id), ...data.activity });
         if (activities.size > 60) activities.delete(activities.keys().next().value);
-        if (card) { updateActivity(card, data.activity); if (data.activity.state === 'running') status(data.activity.title, 'thinking'); }
+        if (card) { updateActivity(card, data.activity); if (!group && data.activity.state === 'running') status(data.activity.title, 'thinking'); }
       }
       if (data.heartbeat && card?.activity) { card.activity.lastSignal = Date.now(); refreshActivityClock(card.activity); }
       if (data.memory?.localOnly || data.webSearch === false) webSearch = false;
@@ -899,6 +934,7 @@ async function generate(epoch, extra = '', visible = false) {
       if (data.knowledge_status && visible) status(({ local: '检索中', search: '查询中', sources: '读取中', evidence: '核查中', archive: '存档中', checking: '核查中', searching: '查询中', reading: '读取中', writing: '整理中', saving: '存档中' })[data.knowledge_status.stage] || '核查中', 'thinking');
       if (data.knowledge) { knowledge = data.knowledge; if (data.knowledge.mode === 'local' || selected.id === 'librarian') webSearch = false; }
       if (data.handoff) handoff = data.handoff;
+      if (data.discussion) decision = data.discussion;
       const delta = data.choices?.[0]?.delta?.content; if (typeof delta === 'string') text += delta;
       if (card) {
         if (typeof delta === 'string') { card.body.textContent = text; card.activity.characters = text.length; }
@@ -918,7 +954,7 @@ async function generate(epoch, extra = '', visible = false) {
     text = text.trim(); if (!text) throw new Error('没有收到回答'); if (!isCurrent(epoch)) throw abortError();
     if (card) finishActivity(card);
     if (state.pendingCard === card) state.pendingCard = null;
-    return { id, text, sentences: splitSentences(text), index: 0, card, entry: null, research, knowledge, handoff, activities: [...activities.values()], agentId: selected.id };
+    return { id, text, sentences: splitSentences(text), index: 0, card, entry: null, research, knowledge, handoff, decision, activities: [...activities.values()], agentId: selected.id };
   } catch (error) {
     controller.abort();
     if (card) {
@@ -927,7 +963,7 @@ async function generate(epoch, extra = '', visible = false) {
       if (state.pendingCard === card) state.pendingCard = null;
     }
     throw error;
-  } finally { state.controllers.delete(controller); if (id) void refreshMemory().catch(() => {}); }
+  } finally { state.controllers.delete(controller); if (id && !group) void refreshMemory().catch(() => {}); }
 }
 
 function speak(text, epoch, onStart) {
@@ -994,12 +1030,60 @@ async function run(epoch) {
     }
   } catch (error) { if (!isCurrent(epoch)) return; halt('error'); errorMessage(error.name === 'TypeError' ? '网络连接失败' : error.message); status('已停止', 'error'); }
 }
+
+async function runDiscussion(epoch) {
+  const participants = state.participants;
+  const question = state.messages.at(-1);
+  let proposal = '', accepted = [], next = 0;
+  try {
+    while (isCurrent(epoch)) {
+      const selected = profile(participants[next]);
+      const context = state.messages.filter(message => message.content).slice(-8);
+      if (!context.includes(question)) context.unshift(question);
+      const messages = context.map(({ role, agent, content }) => ({
+        role, agent, content: role === 'user' ? content : content.slice(-1800),
+      }));
+      const segment = await generate(epoch, '', true, {
+        selected, messages, discussion: { participants, userId: question.id, proposal, accepted },
+      });
+      if (!isCurrent(epoch)) return;
+      if (!segment.decision) throw new Error('未收到群聊结果，请重新发送消息。');
+      renderMarkdown(segment.card.body, segment.text);
+      addActions(segment.card);
+      state.messages.push({ role: 'assistant', content: segment.text, agent: selected.id, id: segment.id });
+      state.messages = state.messages.slice(-20);
+      $('segment-count').textContent = String(++state.count);
+      if ($('reply-voice').checked && synth && window.SpeechSynthesisUtterance) {
+        status(`${selected.name}朗读中`, 'speaking');
+        try { for (const sentence of segment.sentences) await speak(sentence, epoch); }
+        catch (error) { if (error.name !== 'AbortError') errorMessage(error.message); }
+      }
+      if (!isCurrent(epoch)) return;
+      if (segment.decision.consensus) {
+        state.active = false; status('已达成共识'); return;
+      }
+      ({ proposal, accepted } = segment.decision);
+      next = (next + 1) % participants.length;
+    }
+  } catch (error) {
+    if (!isCurrent(epoch)) return;
+    halt('error'); errorMessage(error.name === 'TypeError' ? '网络连接失败' : error.message); status('讨论已停止', 'error');
+  }
+}
+
 function shouldRead(agent) {
   if (agent.id === 'librarian' && (!synth || !window.SpeechSynthesisUtterance)) return false;
   return agent.continuous || $('reply-voice').checked;
 }
 function start() {
-  if (!state.connected || !state.topic || state.active || (!profile().continuous && !state.replyPending)) return;
+  if (!state.connected || !state.topic || state.active) return;
+  if (state.participants.length) {
+    if (!state.replyPending) return;
+    state.replyPending = false; errorMessage(); state.active = true;
+    void runDiscussion(++state.epoch);
+    return;
+  }
+  if (!profile().continuous && !state.replyPending) return;
   if (shouldRead(profile()) && (!synth || !window.SpeechSynthesisUtterance)) { errorMessage('浏览器不支持朗读'); return; }
   errorMessage(); state.active = true; const epoch = ++state.epoch; status('生成中', 'thinking'); void run(epoch);
 }
@@ -1023,75 +1107,314 @@ function populateVoices() {
   $('voice').replaceChildren(new Option('系统默认', ''), ...state.voices.map(v => new Option(v.name, v.voiceURI)));
   $('voice').value = state.voiceChosen && (!selected || state.voices.some(v => v.voiceURI === selected)) ? selected : (state.voices.find(v => v.localService && /zh[-_]CN/i.test(v.lang)) || state.voices[0])?.voiceURI || '';
 }
-function aliases(item) { return [...new Set([item.name, item.id, ...(item.aliases || [])])]; }
-function mentionedAgent(text) {
-  const candidates = state.agents.flatMap(item => aliases(item).map(name => ({ item, name }))).sort((a, b) => b.name.length - a.name.length);
-  for (const { item, name } of candidates) { const at = text.indexOf(`@${name}`); if (at >= 0) return { item, text: `${text.slice(0, at)}${text.slice(at + name.length + 1)}`.trim() }; }
-  return { item: profile(), text };
-}
-function mentionMenu(all = false) {
-  const prefix = $('topic').value.slice(0, $('topic').selectionStart); const match = prefix.match(/@([^\s@]*)$/);
-  if (!all && !match) { $('mention-menu').hidden = true; $('agent-picker').setAttribute('aria-expanded', 'false'); return; }
-  const query = all ? '' : match[1].toLocaleLowerCase(); const options = state.agents.filter(item => aliases(item).some(name => name.toLocaleLowerCase().includes(query)));
-  $('mention-menu').replaceChildren(); state.menuIndex = 0;
-  for (const item of options) {
-    const option = document.createElement('button'); option.type = 'button'; option.className = 'mention-option'; option.dataset.agent = item.id; option.setAttribute('role', 'option'); option.textContent = `@${item.name}`;
-    option.addEventListener('click', () => {
-      selectAgent(item.id); const field = $('topic'); const before = field.value.slice(0, field.selectionStart); const after = field.value.slice(field.selectionEnd);
-      field.value = all ? field.value : `${before.replace(/@[^\s@]*$/, `@${item.name} `)}${after}`; $('mention-menu').hidden = true; $('agent-picker').setAttribute('aria-expanded', 'false'); field.focus();
-    }); $('mention-menu').append(option);
+function workflowChoices() {
+  const catalog = workflowEditor.catalog();
+  const counts = new Map();
+  for (const item of catalog) {
+    const key = item.name.toLowerCase();
+    counts.set(key, (counts.get(key) || 0) + 1);
   }
-  $('mention-menu').hidden = !options.length; $('agent-picker').setAttribute('aria-expanded', String(!!options.length));
+  const aliases = new Set(state.agents.flatMap(item => agentNames(item).map(name => name.toLowerCase())));
+  return catalog.map(item => {
+    const key = item.name.toLowerCase(), suffix = '〔' + item.id.slice(0, 8) + '〕';
+    const token = /[@＠\r\n]/u.test(item.name) ? '工作流' + suffix
+      : counts.get(key) > 1 || aliases.has(key) ? item.name + suffix : item.name;
+    return { ...item, token, kind: 'workflow' };
+  });
 }
 
+function chatMentions(text) {
+  const workflows = new Set();
+  let remaining = text;
+  if (/[@＠]/u.test(text) && workflowEditor.catalog().length) {
+    const choices = new Map(workflowChoices().map(item => [item.token.toLowerCase(), item]));
+    const tokens = [...choices.keys()].sort((a, b) => b.length - a.length).map(name => {
+      const escaped = name.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
+      return /^[\w -]+$/u.test(name) ? escaped + '(?![\\w.-])' : escaped;
+    });
+    const pattern = new RegExp('(^|[\\s,(（，、：:])[@＠](' + tokens.join('|') + ')', 'giu');
+    remaining = text.replace(pattern, (_, before, token) => {
+      workflows.add(choices.get(token.toLowerCase()));
+      return before + ' ';
+    });
+  }
+  return { ...parseAgentMentions(remaining), workflows: [...workflows] };
+}
+
+function updateSendButton(mentioned = chatMentions($('topic').value)) {
+  $('send-btn').disabled = state.saving || !state.connected && !mentioned.workflows.length;
+}
+
+function renderDiscussion() {
+  const mentions = chatMentions($('topic').value), { ids } = mentions;
+  const participants = mentions.workflows.length || ids.length === 1 ? [] : ids.length ? ids : state.participants;
+  const group = $('discussion-members');
+  group.hidden = !participants.length;
+  const names = participants.map(id => profile(id).name).join('、');
+  const label = $('discussion-names');
+  if (label.textContent !== names) label.textContent = names;
+  const picker = $('agent-picker');
+  const name = mentions.workflows[0]?.name || profile(ids[0] || state.agent).name;
+  picker.textContent = participants.length ? '@ 添加 Agent' : '@' + name;
+  picker.setAttribute('aria-label', '选择要 @ 的 Agent 或工作流' + (participants.length ? '' : '，当前为' + name));
+  updateSendButton(mentions);
+}
+
+function closeMentionMenu() {
+  $('mention-menu').hidden = true;
+  $('agent-picker').setAttribute('aria-expanded', 'false');
+}
+
+function mentionMenu(all = false) {
+  const field = $('topic');
+  const before = field.value.slice(0, field.selectionStart);
+  const match = before.match(/[@＠]([^@＠\r\n]*)$/u);
+  if (!all && !match) { closeMentionMenu(); return; }
+  const query = all ? '' : match[1].toLowerCase();
+  const selected = chatMentions(field.value);
+  const inherited = all && !selected.ids.length && !selected.workflows.length ? state.participants : [];
+  const workflowOptions = workflowChoices().filter(item => (query === '工作流' || [item.name, item.token].some(name => name.toLowerCase().includes(query)))
+    && (!selected.workflows.some(flow => flow.id === item.id) || !all && match[1].toLowerCase() === item.token.toLowerCase()));
+  const agentOptions = state.agents.filter(item => agentNames(item).some(name => name.toLowerCase().includes(query))
+    && !inherited.includes(item.id) && (!selected.ids.includes(item.id) || !all && parseAgentMentions(match[0]).ids.includes(item.id)));
+  const options = [...workflowOptions, ...agentOptions];
+  const menu = $('mention-menu'); menu.replaceChildren();
+  for (const item of options) {
+    const option = document.createElement('button'); option.type = 'button'; option.className = 'mention-option';
+    const label = document.createElement('span'); label.className = 'mention-name'; label.textContent = '@' + (item.token || item.name);
+    option.append(label);
+    if (item.kind === 'workflow') {
+      option.dataset.workflow = item.id;
+      const kind = document.createElement('span'); kind.className = 'mention-kind'; kind.textContent = '工作流'; option.append(kind);
+    } else option.dataset.agent = item.id;
+    option.addEventListener('click', () => {
+      if (state.active || state.saving) halt('typing');
+      const start = all ? field.selectionStart : match.index;
+      const spacer = all && start && !/\s/u.test(field.value[start - 1]) ? ' ' : '';
+      const names = item.kind === 'workflow' ? ['@' + item.token] : [...inherited.map(id => profile(id).name), item.name].map(name => '@' + name);
+      field.setRangeText(spacer + names.join(' ') + ' ', start, field.selectionEnd, 'end');
+      closeMentionMenu(); renderDiscussion(); field.focus();
+    }); menu.append(option);
+  }
+  menu.hidden = !options.length; $('agent-picker').setAttribute('aria-expanded', String(!!options.length));
+  if (all) menu.firstElementChild?.focus();
+}
+
+function bindWorkflowInputs(fields, text) {
+  const keys = new Map(fields.flatMap(item => [[item.name.toLowerCase(), item.name], [item.label.toLowerCase(), item.name]]));
+  const values = new Map();
+  let current;
+  for (const line of text.split(/\r?\n/u)) {
+    const match = line.match(/^([^:：]+)[:：][ \t]*(.*)$/u);
+    const key = match && keys.get(match[1].trim().toLowerCase());
+    if (key) {
+      current = key;
+      values.set(key, match[2]);
+    } else if (current) values.set(current, values.get(current) + '\n' + line);
+  }
+  if (!values.size && text) {
+    const paragraphs = fields.filter(item => item.type === 'paragraph');
+    const target = fields.length === 1 ? fields[0] : paragraphs.length === 1 ? paragraphs[0] : null;
+    if (target) values.set(target.name, text);
+  }
+  return Object.fromEntries([...values].map(([key, value]) => [key, value.trim()]));
+}
+
+function askWorkflowInputs(flow, fields, inputs) {
+  const dialog = $('chat-workflow-dialog'), form = $('chat-workflow-form'), target = $('chat-workflow-fields');
+  $('chat-workflow-title').textContent = flow.name;
+  target.replaceChildren();
+  for (const [index, item] of fields.entries()) {
+    const field = document.createElement('div'); field.className = 'wf-field';
+    const label = document.createElement('label'); label.textContent = item.label;
+    const input = document.createElement(item.type === 'paragraph' ? 'textarea' : 'input');
+    label.htmlFor = input.id = 'chat-workflow-field-' + index;
+    input.name = item.name; input.value = Object.hasOwn(inputs, item.name) ? inputs[item.name] : '';
+    input.required = item.required; input.maxLength = 4000;
+    if (item.type === 'paragraph') input.rows = 5;
+    input.addEventListener('input', () => input.setCustomValidity(''));
+    field.append(label, input); target.append(field);
+  }
+  const controls = [...target.querySelectorAll('input, textarea')];
+  return new Promise(resolve => {
+    let result = null;
+    form.onsubmit = event => {
+      event.preventDefault();
+      const missing = controls.find(input => input.required && !input.value.trim());
+      if (missing) { missing.setCustomValidity('请填写此项。'); missing.reportValidity(); return; }
+      result = Object.fromEntries(new FormData(form));
+      dialog.close();
+    };
+    dialog.addEventListener('close', () => { form.onsubmit = null; resolve(result); }, { once: true });
+    dialog.showModal();
+    (controls.find(input => input.required && !input.value.trim()) || controls[0])?.focus();
+  });
+}
+
+async function submitWorkflow(entry, text, raw) {
+  if (state.attachments.length) { errorMessage('请先移除对话附件，再运行工作流。'); return; }
+  halt('interrupt');
+  const epoch = state.epoch, controller = new AbortController(), sessionId = state.sessionId, agent = state.agent;
+  state.controllers.add(controller); state.saving = true; status('加载工作流', 'thinking'); errorMessage();
+  const userId = crypto.randomUUID(), replyId = crypto.randomUUID();
+  let card, completed = false, failure = '';
+  try {
+    const flow = await jsonApi('/api/workflows/' + entry.id, undefined, { signal: controller.signal });
+    if (epoch !== state.epoch) return;
+    const { apiKey, model } = workflowConnection();
+    if (!apiKey && flow.nodes.some(node => node.type === 'llm')) { openConnectionSettings(); return; }
+    const fields = flow.nodes.find(node => node.type === 'start').config.fields;
+    const bound = bindWorkflowInputs(fields, text);
+    const needsFields = fields.some(field => field.required && !(Object.hasOwn(bound, field.name) && bound[field.name]))
+      || (!text && fields.length > 0);
+    const inputs = needsFields ? await askWorkflowInputs(flow, fields, bound) : bound;
+    if (!inputs || epoch !== state.epoch) return;
+    const content = needsFields ? ['@' + entry.token, ...fields.filter(field => inputs[field.name]?.trim())
+      .map(field => field.label + '：' + inputs[field.name])].join('\n') : raw;
+    if (content.length > 4000) throw new Error('工作流输入超过 4000 字，请缩短后再发送。');
+    if (state.keepMemory) {
+      await memoryInitialization;
+      if (epoch !== state.epoch) return;
+      if (!state.memoryReady) throw new Error('记录服务不可用');
+    }
+    state.saving = false; state.active = state.runningWorkflow = true;
+    state.participants = []; state.current = null; state.replyPending = false; state.topic = ''; resetResearch();
+    status('工作流运行中', 'thinking');
+    const chat = state.keepMemory ? { sessionId, userId, replyId, agent, content } : undefined;
+    await streamWorkflow(flow.id, { apiKey, model, inputs, revision: flow.revision, chat }, controller.signal, apiError, event => {
+      if (!isCurrent(epoch)) return;
+      if (event.id) {
+        const workflow = { id: flow.id, name: event.name || flow.name, runId: event.id };
+        messageCard('user', content, agent, userId, sessionId, workflow);
+        state.messages.push({ role: 'user', content, agent, id: userId, workflow });
+        if (state.title === '新对话') state.title = content.split(/\r?\n/, 1)[0].slice(0, 80);
+        $('current-topic').textContent = state.title;
+        $('topic').value = ''; closeMentionMenu(); renderDiscussion();
+        card = state.pendingCard = messageCard('assistant', '', agent, replyId, sessionId, workflow);
+        ensureActivity(card, { live: true });
+        if (chat) void refreshMemory().catch(() => {});
+      }
+      if (card && event.step && event.step.status !== 'skipped') {
+        const step = event.step, title = flow.nodes.find(node => node.id === step.id)?.title || '运行节点';
+        const started = new Date(step.started).toISOString();
+        updateActivity(card, { id: step.id, kind: 'answer', title, state: step.status === 'stopped' ? 'cancelled' : step.status,
+          at: new Date().toISOString(), startedAt: started, elapsedMs: step.elapsed, detail: step.error });
+      }
+      if (card && event.status === 'complete') {
+        const answer = formatWorkflowOutput(event.output);
+        renderMarkdown(card.body, answer);
+        finishActivity(card);
+        state.messages.push({ role: 'assistant', content: answer, agent, id: replyId, workflow: card.workflow });
+        state.messages = state.messages.slice(-20);
+        $('segment-count').textContent = String(++state.count);
+        completed = true;
+      }
+      if (event.status === 'failed') throw new Error(event.error || '工作流执行失败。');
+    });
+    if (isCurrent(epoch) && !completed) throw new Error('工作流运行连接中断。');
+  } catch (error) {
+    if (epoch !== state.epoch) return;
+    failure = error.message;
+    if (card) { finishActivity(card, 'failed', failure); card.label.textContent += ' · 未完成'; }
+    errorMessage(failure);
+  } finally {
+    state.controllers.delete(controller);
+    if (epoch === state.epoch) {
+      if (card) addActions(card);
+      state.saving = state.active = state.runningWorkflow = false;
+      state.pendingCard = null;
+      status(completed ? '工作流已完成' : failure ? '工作流未完成' : undefined, failure ? 'error' : 'idle');
+    }
+  }
+}
+
+$('chat-workflow-close').addEventListener('click', () => $('chat-workflow-dialog').close());
 $('composer').addEventListener('submit', async event => {
   event.preventDefault(); const raw = $('topic').value.trim() || (state.attachments.length ? '请摘要这些资料' : ''); if (!raw) return;
+  const mentioned = chatMentions(raw);
+  if (mentioned.workflows.length) {
+    if (mentioned.workflows.length !== 1 || mentioned.ids.length) { errorMessage('一次请选择一个工作流运行。'); return; }
+    await submitWorkflow(mentioned.workflows[0], mentioned.text, raw);
+    return;
+  }
   if (!state.connected) { $('settings-dialog').showModal(); $('api-key').focus(); return; }
-  const mentioned = mentionedAgent(raw); if (!mentioned.text) { selectAgent(mentioned.item.id); $('topic').value = ''; $('mention-menu').hidden = true; return; }
-  halt('interrupt'); selectAgent(mentioned.item.id, false);
-  const references = state.attachments.map(resourceMarkdown).join('\n');
+  const participants = mentioned.ids.length === 1 ? [] : mentioned.ids.length ? mentioned.ids : state.participants;
+  const agent = mentioned.ids[0] || participants[0] || state.agent;
+  if (!mentioned.text) {
+    if (participants.length) { errorMessage('请写下想让这些 Agent 讨论的问题。'); return; }
+    $('topic').value = ''; closeMentionMenu(); selectAgent(agent); return;
+  }
+  if (participants.length && state.attachments.length) {
+    errorMessage('群聊可讨论已有消息。请先用资料摘要助手读取附件，或移除附件后开始群聊。'); return;
+  }
+  const attachments = agent === 'summarizer' ? state.attachments : [];
+  const references = attachments.map(resourceMarkdown).join('\n');
   const savedContent = raw + (references ? `\n\n${references}` : '');
   const content = mentioned.text + (references ? `\n\n${references}` : '');
   if (savedContent.length > 4000) { errorMessage('消息与资料引用超过 4000 字，请缩短消息'); return; }
+  halt('interrupt');
   const epoch = state.epoch; state.saving = true; status('保存中', 'thinking');
   try {
     await memoryInitialization; if (epoch !== state.epoch) return;
     if (state.keepMemory && !state.memoryReady) throw new Error('记录服务不可用');
     const id = crypto.randomUUID();
-    if (state.keepMemory) await memoryApi('user', { sessionId: state.sessionId, id, content: savedContent, agent: state.agent });
+    if (state.keepMemory) await memoryApi('user', { sessionId: state.sessionId, id, content: savedContent, agent, participants });
     if (epoch !== state.epoch) return;
-    state.current = null; state.topic = mentioned.text; state.replyPending = true; state.resourceIds = state.attachments.map(file => file.id);
+    state.participants = participants;
+    selectAgent(agent, false);
+    state.current = null; state.topic = mentioned.text; state.replyPending = true; state.resourceIds = attachments.map(file => file.id);
     state.messages.push({ role: 'user', content, agent: state.agent, id }); state.messages = state.messages.slice(-20);
     if (state.title === '新对话') state.title = mentioned.text.slice(0, 80);
     $('current-topic').textContent = state.title; const card = messageCard('user', savedContent, state.agent, id); if (references) renderMarkdown(card.body, savedContent);
-    $('topic').value = ''; $('mention-menu').hidden = true; resetResearch(mentioned.text); record('question', { text: raw });
+    $('topic').value = ''; closeMentionMenu(); renderDiscussion(); resetResearch(mentioned.text); record('question', { text: raw });
     if (state.keepMemory) void refreshMemory().catch(() => {});
   } catch (error) { if (epoch === state.epoch) errorMessage(error.message); return; }
   finally { if (epoch === state.epoch) { state.saving = false; status(); } }
   if (epoch === state.epoch) start();
 });
-$('topic').addEventListener('input', () => { if (state.active || state.saving) halt('typing'); if (state.attachmentNotice) { state.attachmentNotice = ''; renderAttachments(); } mentionMenu(); });
+$('topic').addEventListener('input', () => { if (state.active || state.saving) halt('typing'); if (state.attachmentNotice) { state.attachmentNotice = ''; renderAttachments(); } renderDiscussion(); mentionMenu(); });
 $('topic').addEventListener('keydown', event => {
-  if (event.key === 'Escape') { $('mention-menu').hidden = true; return; }
-  if (!$('mention-menu').hidden && ['ArrowDown', 'ArrowUp', 'Tab'].includes(event.key)) {
-    const options = [...$('mention-menu').querySelectorAll('.mention-option')]; if (!options.length) return; event.preventDefault();
-    if (event.key === 'Tab') { options[state.menuIndex % options.length].click(); return; }
-    state.menuIndex = (state.menuIndex + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
-    options.forEach((option, index) => option.classList.toggle('active', index === state.menuIndex)); return;
+  if (event.isComposing) return;
+  if (event.key === 'Escape') { closeMentionMenu(); return; }
+  if (!$('mention-menu').hidden && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+    event.preventDefault();
+    (event.key === 'ArrowDown' ? $('mention-menu').firstElementChild : $('mention-menu').lastElementChild)?.focus();
+    return;
   }
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); }
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    const field = event.currentTarget;
+    const partial = field.value.slice(0, field.selectionStart).match(/[@＠][^@＠\r\n]*$/u);
+    const menu = $('mention-menu');
+    if (!menu.hidden && partial && chatMentions(partial[0]).text) {
+      if (menu.childElementCount === 1) menu.firstElementChild.click();
+      else menu.firstElementChild?.focus();
+      return;
+    }
+    $('composer').requestSubmit();
+  }
 });
-$('agent-picker').addEventListener('click', () => { if ($('mention-menu').hidden) mentionMenu(true); else $('mention-menu').hidden = true; });
-document.addEventListener('click', event => { if (!event.target.closest('.composer-dock')) { $('mention-menu').hidden = true; $('agent-picker').setAttribute('aria-expanded', 'false'); } });
+$('mention-menu').addEventListener('keydown', event => {
+  const menu = event.currentTarget;
+  if (event.key === 'Escape') { event.preventDefault(); closeMentionMenu(); $('topic').focus(); }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    (event.key === 'ArrowDown' ? event.target.nextElementSibling || menu.firstElementChild
+      : event.target.previousElementSibling || menu.lastElementChild)?.focus();
+  }
+});
+$('agent-picker').addEventListener('click', () => { if ($('mention-menu').hidden) mentionMenu(true); else closeMentionMenu(); });
+document.addEventListener('click', event => { if (!event.target.closest('.composer-dock')) closeMentionMenu(); });
 $('pause-btn').addEventListener('click', () => halt()); $('resume-btn').addEventListener('click', start);
 $('new-chat').addEventListener('click', newChat);
-for (const view of ['chat', 'agents', 'library', 'resources', 'graph']) $(`nav-${view}`).addEventListener('click', () => {
+for (const view of ['chat', 'agents', 'workflow', 'library', 'resources', 'graph']) $(`nav-${view}`).addEventListener('click', () => {
   if (view === 'resources') { stopExtraction(); state.resources.selected = null; state.resources.request++; }
   setView(view);
   // 图谱本身就是要看全屏，窄屏进来不自动弹出笔记列表，免得把画布盖住。
-  if (view !== 'graph' && matchMedia('(max-width:760px)').matches) document.querySelector('.workspace').classList.add('list-open');
+  if (['graph', 'workflow'].includes(view)) closeMobileList();
+  else if (matchMedia('(max-width:760px)').matches) document.querySelector('.workspace').classList.add('list-open');
   if (view === 'resources') void refreshResources().catch(error => errorMessage(error.message));
-  else if (view !== 'graph') void refreshMemory().catch(() => {});
+  else if (!['graph', 'workflow'].includes(view)) void refreshMemory().catch(() => {});
 });
 $('list-search').addEventListener('input', () => { if (state.view === 'resources') { stopExtraction(); state.resources.request++; state.resources.selected = null; $('current-topic').textContent = '资料库'; } renderLists(); });
 $('attach-resource').addEventListener('click', () => { void openResourcePicker(); });
@@ -1164,7 +1487,7 @@ window.addEventListener('pagehide', () => { halt('leave'); stopExtraction(); });
 let checkingService = false;
 setInterval(async () => {
   // The administrator stream already sends heartbeats and reports disconnects.
-  if (!state.active || state.agent === 'librarian' || checkingService) return; checkingService = true; const epoch = state.epoch;
+  if (!state.active || !state.participants.length && state.agent === 'librarian' || checkingService) return; checkingService = true; const epoch = state.epoch;
   try { const response = await fetch('/health', { signal: AbortSignal.timeout(1500) }); if (!response.ok || (await response.json()).app !== 'taotao-local') throw new Error(); }
   catch { if (isCurrent(epoch)) { halt('server_closed'); state.connected = false; $('connection-status').textContent = '已关闭'; status('已关闭'); } }
   finally { checkingService = false; }
@@ -1185,6 +1508,8 @@ const memoryInitialization = (async () => {
 })();
 const initialResource = resourceReference(location.href);
 if (initialResource) void showResource(initialResource.id, initialResource);
+else if (location.hash === '#workflow') setView('workflow');
+else void workflowEditor.refreshCatalog().then(renderDiscussion).catch(() => {});
 void jsonApi('/api/agents').then(data => {
   if (Array.isArray(data.agents) && data.agents.length) { state.agents = data.agents; $('settings-agent').replaceChildren(...state.agents.map(item => new Option(item.name, item.id))); selectAgent(state.agent, false); renderLists(); }
   if (typeof data.permission === 'boolean') { state.permission = data.permission; $('knowledge-permission').checked = data.permission; }
