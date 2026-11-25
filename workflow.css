@@ -6,6 +6,8 @@
 .wf-tools input { width: 168px; }
 .wf-space { display: flex; position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .wf-canvas { flex: 1; min-width: 0; position: relative; }
+.wf-empty { position: absolute; z-index: 2; inset: 0; display: grid; place-content: center; justify-items: center; gap: 8px; background: var(--canvas); }
+.wf-empty p { margin: 0; color: var(--muted); }
 .wf-viewport {
   position: absolute; inset: 0; overflow: clip; touch-action: none; user-select: none; cursor: grab;
   background-color: #f4f6fc;
@@ -28,6 +30,7 @@
 .wf-node[data-type=condition] { --node-color: #7a511d; --node-fill: #fff0d9; min-height: 112px; }
 .wf-node[data-type=wiki] { --node-color: #317768; --node-fill: #e4f4ef; }
 .wf-node[data-type=llm] { --node-color: #724c9c; --node-fill: #f2e9fc; }
+.wf-node[data-type=agent] { --node-color: #4861a3; --node-fill: #e7edfd; }
 .wf-node[data-type=aggregate] { --node-color: #166a7b; --node-fill: #e4f3f7; }
 .wf-node[data-type=output] { --node-color: #7e456b; --node-fill: #faeaf3; }
 .wf-node[data-chosen=true] { border-color: var(--accent); box-shadow: 0 0 0 2px #bdcafa, 0 4px 12px #46568417; }
@@ -40,7 +43,7 @@
 .editing .wf-node-label { cursor: grab; }
 .wf-node-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; }
 .wf-node-icon { display: grid; place-items: center; flex: 0 0 31px; height: 31px; color: var(--node-color); background: var(--node-fill); border-radius: 9px; font-size: .9375rem; line-height: 1; }
-.wf-node-sub { display: block; padding: 2px 0 0 39px; font-size: .6875rem; line-height: 1.5; color: var(--muted); }
+.wf-node-sub { display: block; padding: 2px 0 0 39px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .6875rem; line-height: 1.5; color: var(--muted); }
 .wf-port {
   position: absolute; width: 24px; height: 24px; padding: 0; display: grid; place-items: center;
   top: 50%; transform: translateY(-50%); right: -13px; background: none; border: 0; cursor: default;

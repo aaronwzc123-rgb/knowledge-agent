@@ -8,7 +8,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createServer } from './server.mjs';
 
-test('email workflow picks the correct branch and stores outputs for each revision', async t => {
+test('workflows route inputs, run Agent configuration and retain past runs after deletion', async t => {
   const temporary = await realpath(tmpdir());
   const root = await mkdtemp(join(temporary, 'taotao-workflow-'));
   const calls = [];
@@ -109,4 +109,43 @@ test('email workflow picks the correct branch and stores outputs for each revisi
   assert.equal(latest.status, 'stopped');
   assert.equal((await read(path + '/runs/' + latest.id)).steps.find(step => step.id === 'general').status, 'stopped');
   assert.equal((await chatHistory()).messages.at(-1).status, 'interrupted');
+
+  const agent = 'optimist';
+  const harnessUrl = origin + '/api/agents/' + agent;
+  const harness = await fetch(harnessUrl).then(response => response.json());
+  const savedPrompt = await fetch(harnessUrl + '/system', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ revision: harness.revisions.system, value: '从机会出发列出可测试的假设。' }),
+  });
+  assert.equal(savedPrompt.status, 200);
+  const started = await request('', 'POST', { template: 'blank' }).then(response => response.json());
+  const agentPath = '/' + started.id;
+  started.nodes.push({ id: 'reviewer', title: '机会分析', type: 'agent', x: 122, y: 120,
+    config: { agent, prompt: '分析：{{start.input}}', remember: false } });
+  started.nodes.find(node => node.type === 'output').config.fields[0].variable = 'reviewer.text';
+  started.edges = [{ from: 'start', to: 'reviewer', port: 'next' }, { from: 'reviewer', to: 'output', port: 'next' }];
+  assert.equal((await request(agentPath, 'PUT', started)).status, 200);
+  const agentRun = () => request(agentPath + '/runs', 'POST', {
+    revision: 2, apiKey: 'fixture-workflow-key', model: 'fixture', inputs: { input: '社区活动' },
+  });
+  const entries = (await (await agentRun()).text()).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(entries.at(-1).status, 'complete');
+  assert.equal(entries.at(-1).output.result, '可审核的邮件草稿');
+  assert.match(calls.at(-1)[0].content, /^从机会出发列出可测试的假设。/u);
+  assert.equal(calls.at(-1).at(-1).content, '分析：社区活动');
+
+  assert.equal((await fetch(harnessUrl, { method: 'DELETE' })).status, 200);
+  const directory = await fetch(origin + '/api/agents').then(response => response.json());
+  assert.ok(!directory.agents.some(item => item.id === agent) && directory.deleted.includes(agent));
+  assert.equal((await fetch(harnessUrl)).status, 410);
+  const before = calls.length;
+  assert.match(await (await agentRun()).text(), /乐观主义者.*已删除/u);
+  assert.equal(calls.length, before);
+  const oldRunPath = agentPath + '/runs/' + entries[0].id;
+  assert.equal((await request(agentPath, 'DELETE', { revision: 1 })).status, 409);
+  assert.equal((await request(agentPath, 'DELETE', { revision: 2 })).status, 200);
+  assert.ok(!(await read('')).some(item => item.id === started.id));
+  assert.equal((await read(agentPath)).deleted, true);
+  assert.equal((await agentRun()).status, 410);
+  assert.equal((await read(oldRunPath)).output.result, '可审核的邮件草稿');
 });

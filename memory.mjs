@@ -483,6 +483,20 @@ export class MemoryStore {
     return this.db.prepare("SELECT value FROM meta WHERE key='knowledge-write'").get()?.value === 'true';
   }
 
+  deletedAgents() {
+    return this.db.prepare("SELECT substr(key,15) AS id FROM meta WHERE key LIKE 'deleted-agent:%'").all().map(row => row.id);
+  }
+
+  agentDeleted(id) {
+    return !!this.db.prepare('SELECT 1 FROM meta WHERE key=?').get('deleted-agent:' + id);
+  }
+
+  deleteAgent(id) {
+    if (id !== 'harness2-upstream') getAgent(id);
+    this.db.prepare("INSERT OR IGNORE INTO meta VALUES(?,'true')").run('deleted-agent:' + id);
+    return { deleted: true };
+  }
+
   // 收录准则存在记忆库里，用户可以手改，管理员也能按指令修订。
   knowledgeGuidelines() {
     try {
@@ -702,6 +716,7 @@ export class MemoryStore {
   }
 
   createKnowledgeRequest({ sessionId, messageId }) {
+    if (this.agentDeleted('librarian')) fail('知识库管理员已删除。', 410);
     if (!validId(sessionId) || !validId(messageId)) fail('聊天编号无效。');
     const existing = this.db.prepare('SELECT * FROM knowledge_requests WHERE origin_message=?').get(messageId);
     if (existing) {

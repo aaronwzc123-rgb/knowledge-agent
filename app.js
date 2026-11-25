@@ -8,7 +8,7 @@ import { formatWorkflowOutput } from './workflow-schema.mjs';
 const $ = id => document.getElementById(id);
 const synth = window.speechSynthesis;
 const state = {
-  view: 'chat', agent: 'qa', detailAgent: 'qa', agents: Object.values(AGENTS),
+  view: 'chat', agent: 'qa', detailAgent: 'qa', agents: Object.values(AGENTS), deletedAgents: new Set(),
   sessionId: crypto.randomUUID(), title: '新对话', topic: '', messages: [],
   participants: [], runningWorkflow: false,
   epoch: 0, active: false, connected: false, saving: false, memoryReady: false,
@@ -25,6 +25,9 @@ const state = {
 const profile = (id = state.agent) => state.agents.find(a => a.id === id) || getAgent(id);
 const originalHarness = { id: 'harness2-upstream', name: 'Harness²' };
 const detailProfile = id => id === originalHarness.id ? originalHarness : profile(id);
+const agentAvailable = id => state.agents.some(agent => agent.id === id);
+const defaultAgent = id => agentAvailable(id) ? id : state.agents[0]?.id || 'qa';
+const agentDirectory = () => state.deletedAgents.has(originalHarness.id) ? state.agents : [...state.agents, originalHarness];
 const abortError = () => new DOMException('已暂停', 'AbortError');
 const isCurrent = epoch => state.active && state.epoch === epoch;
 const persistSetting = (name, value) => { try { localStorage.setItem(name, String(value)); } catch {} };
@@ -65,6 +68,7 @@ const workflowConnection = () => ({ apiKey: state.connected ? $('api-key').value
 function openConnectionSettings() { $('settings-dialog').showModal(); $('api-key').focus(); }
 const workflowEditor = mountWorkflowEditor({
   jsonApi, apiError,
+  getAgents: () => state.agents,
   getConnection: workflowConnection, openSettings: openConnectionSettings,
   setTitle: title => { if (state.view === 'workflow') $('current-topic').textContent = title; },
   closeList: closeMobileList,
@@ -202,8 +206,8 @@ function selectAgent(id, stop = true) {
     halt('agent_switch'); state.participants = []; state.current = null; state.replyPending = false; state.topic = '';
   }
   state.agent = id;
-  $('settings-agent').value = id;
-  $('web-search').disabled = id === 'harness2';
+  $('settings-agent').value = agentAvailable(id) ? id : '';
+  $('web-search').disabled = id === 'harness2' || !agentAvailable(id);
   $('web-search').checked = id !== 'harness2' && searchPreference(id);
   $('resume-btn').textContent = profile().continuous || id === 'librarian' ? '继续' : '重试';
   persistSetting('taotao-agent', id);
@@ -228,7 +232,7 @@ function setView(view) {
   $('new-chat').hidden = view !== 'chat'; $('chat-menu').hidden = view !== 'chat';
   $('status-dot').hidden = view === 'resources'; $('status-text').hidden = view === 'resources';
   $('list-search').value = '';
-  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? detailProfile(state.detailAgent).name
+  $('current-topic').textContent = view === 'chat' ? state.title : view === 'agents' ? 'Agent'
     : view === 'resources' ? state.resources.selected?.name || '资料库' : view === 'graph' ? '知识图谱' : view === 'workflow' ? '工作流'
     : state.notePath ? noteTitle(state.notePath) : '知识库';
   renderLists();
@@ -312,6 +316,7 @@ function sideRow(className, title, selected, onClick, icon = '') {
   button.append(symbol, label); button.addEventListener('click', onClick); return button;
 }
 function renderLists() {
+  $('delete-session').hidden = state.view !== 'chat' || !state.snapshot.sessions.some(session => session.id === state.sessionId);
   const search = $('list-search').value.trim().toLocaleLowerCase();
   if (state.view === 'workflow') { workflowEditor.filter(search); return; }
   const matches = value => String(value).toLocaleLowerCase().includes(search);
@@ -322,7 +327,7 @@ function renderLists() {
   }
   if (!$('session-list').childElementCount) { const empty = document.createElement('p'); empty.className = 'side-empty'; empty.textContent = '暂无对话'; $('session-list').append(empty); }
   $('agent-list').replaceChildren();
-  for (const item of [...state.agents, originalHarness].filter(a => matches(a.name))) {
+  for (const item of agentDirectory().filter(a => matches(a.name))) {
     const row = sideRow('agent-row', item.name, item.id === state.detailAgent, () => { showAgent(item.id); closeMobileList(); }, item.name[0]);
     row.dataset.agent = item.id; $('agent-list').append(row);
   }
@@ -342,6 +347,16 @@ function renderLists() {
   if (state.view === 'resources') renderResources();
 }
 function showAgent(id) {
+  const directory = agentDirectory();
+  if (!directory.some(agent => agent.id === id)) id = directory[0]?.id;
+  $('agent-empty').hidden = !!id; $('agent-detail').hidden = !id;
+  if (!id) {
+    endAgentHarnessEdit($('agent-harness'));
+    state.detailAgent = null;
+    if (state.view === 'agents') $('current-topic').textContent = 'Agent';
+    renderLists();
+    return;
+  }
   state.detailAgent = id; const item = detailProfile(id);
   const upstream = id === originalHarness.id;
   $('agent-name').textContent = item.name; $('agent-avatar').textContent = item.name[0];
@@ -363,6 +378,32 @@ function showAgent(id) {
   });
   if (state.view === 'agents') $('current-topic').textContent = item.name;
   renderLists();
+}
+let agentCatalogEpoch = 0;
+async function refreshAgentCatalog() {
+  const epoch = ++agentCatalogEpoch;
+  const data = await jsonApi('/api/agents');
+  if (epoch !== agentCatalogEpoch || !Array.isArray(data.agents)) return;
+  state.agents = data.agents;
+  state.deletedAgents = new Set(data.deleted || []);
+  if (!agentAvailable(state.agent) || state.participants.some(id => !agentAvailable(id))) {
+    if (state.active && !state.runningWorkflow) halt('agent_removed');
+    state.participants = []; state.current = null; state.replyPending = false; state.topic = '';
+  }
+  $('settings-agent').replaceChildren(...(state.agents.length
+    ? state.agents.map(item => new Option(item.name, item.id)) : [new Option('暂无 Agent', '')]));
+  $('settings-agent').disabled = !state.agents.length;
+  if (typeof data.permission === 'boolean') {
+    state.permission = data.permission;
+    $('knowledge-permission').checked = data.permission;
+  }
+  selectAgent(defaultAgent(state.agent), false);
+  for (const card of $('conversation').querySelectorAll('.message[data-agent]')) {
+    const collect = card.querySelector('[data-action=collect]');
+    if (collect) collect.hidden = !agentAvailable('librarian') || profile(card.dataset.agent).reviewEnabled === false;
+  }
+  if (state.view === 'agents') showAgent(state.detailAgent);
+  else renderLists();
 }
 function clearConversation() {
   $('conversation').querySelectorAll('.message').forEach(node => node.remove()); $('welcome').hidden = false;
@@ -487,7 +528,7 @@ function addActions(card) {
   }
   if (card.id && !card.workflow && card.agentId !== 'librarian') {
     const collect = document.createElement('button'); collect.type = 'button'; collect.textContent = '收录'; collect.dataset.action = 'collect';
-    collect.hidden = profile(card.agentId).reviewEnabled === false;
+    collect.hidden = !agentAvailable('librarian') || profile(card.agentId).reviewEnabled === false;
     collect.addEventListener('click', () => { void collectMessage(card, collect); }); actions.append(collect);
   }
   if (!card.workflow && card.agentId === 'taotao') for (const [label, direction] of [['多聊', 'more'], ['少聊', 'less']]) {
@@ -542,11 +583,14 @@ async function loadSession(id, autoRun = false) {
     const lastUserIndex = data.messages.findLastIndex(m => m.role === 'user');
     const lastUser = data.messages[lastUserIndex];
     const lastReply = data.messages.slice(lastUserIndex + 1).findLast(m => m.role === 'assistant' && m.visible !== 0);
-    state.participants = autoRun ? [] : JSON.parse(lastUser?.participants || '[]');
-    state.topic = lastUser?.workflow ? '' : lastUser?.content || '';
+    const savedAgent = autoRun ? 'librarian' : lastUser?.agent || data.session.agent || 'qa';
+    const savedParticipants = autoRun ? [] : JSON.parse(lastUser?.participants || '[]');
+    const canResume = agentAvailable(savedAgent) && savedParticipants.every(agentAvailable);
+    state.participants = canResume ? savedParticipants : [];
+    state.topic = canResume && !lastUser?.workflow ? lastUser?.content || '' : '';
     $('topic').value = ''; closeMentionMenu();
-    selectAgent(autoRun ? 'librarian' : lastUser?.agent || data.session.agent || 'qa', false);
-    state.replyPending = !lastUser?.workflow && !state.participants.length && !!lastUser && (!lastReply || lastReply.status !== 'complete' || lastReply.resumable === 1);
+    selectAgent(defaultAgent(savedAgent), false);
+    state.replyPending = canResume && !lastUser?.workflow && !state.participants.length && !!lastUser && (!lastReply || lastReply.status !== 'complete' || lastReply.resumable === 1);
     clearConversation(); resetResearch(state.topic);
     for (const message of state.messages) {
       const card = messageCard(message.role, message.content, message.agent, message.id, id, message.workflow);
@@ -562,7 +606,7 @@ async function loadSession(id, autoRun = false) {
     }
     $('segment-count').textContent = String(state.count);
     errorMessage(); setView('chat'); closeMobileList(); scrollConversation(true); status();
-    if (autoRun && lastUser && data.messages.at(-1)?.role === 'user') { state.replyPending = true; start(); }
+    if (autoRun && canResume && lastUser && data.messages.at(-1)?.role === 'user') { state.replyPending = true; start(); }
   } catch (error) { if (epoch === state.epoch) errorMessage(error.message); }
 }
 async function collectMessage(card, button) {
@@ -858,6 +902,7 @@ function renderResourcePicker() {
   if (!files.length) { const empty = document.createElement('p'); empty.className = 'document-empty'; empty.textContent = '暂无资料'; target.append(empty); }
 }
 async function openResourcePicker() {
+  if (!agentAvailable('summarizer')) { errorMessage('资料摘要助手已删除。'); return; }
   if (state.active) halt('attachment');
   $('resource-picker-search').value = ''; state.pickerSelection = new Set(state.attachments.map(file => file.id));
   $('resource-picker-status').textContent = '读取中'; $('resource-picker-files').replaceChildren(); $('resource-picker-dialog').showModal();
@@ -865,6 +910,7 @@ async function openResourcePicker() {
   catch (error) { $('resource-picker-status').textContent = error.message; }
 }
 function summarizeResource() {
+  if (!agentAvailable('summarizer')) { errorMessage('资料摘要助手已删除。'); return; }
   const file = state.resources.selected; if (!file?.id) return;
   newChat(); selectAgent('summarizer'); state.attachments = [file]; state.attachmentNotice = ''; renderAttachments();
   $('topic').value = '请摘要这份资料'; $('topic').focus();
@@ -1076,7 +1122,7 @@ function shouldRead(agent) {
   return agent.continuous || $('reply-voice').checked;
 }
 function start() {
-  if (!state.connected || !state.topic || state.active) return;
+  if (!state.connected || !state.topic || state.active || !agentAvailable(state.agent)) return;
   if (state.participants.length) {
     if (!state.replyPending) return;
     state.replyPending = false; errorMessage(); state.active = true;
@@ -1142,7 +1188,7 @@ function chatMentions(text) {
 }
 
 function updateSendButton(mentioned = chatMentions($('topic').value)) {
-  $('send-btn').disabled = state.saving || !state.connected && !mentioned.workflows.length;
+  $('send-btn').disabled = state.saving || (!state.connected || !state.agents.length) && !mentioned.workflows.length;
 }
 
 function renderDiscussion() {
@@ -1154,9 +1200,9 @@ function renderDiscussion() {
   const label = $('discussion-names');
   if (label.textContent !== names) label.textContent = names;
   const picker = $('agent-picker');
-  const name = mentions.workflows[0]?.name || profile(ids[0] || state.agent).name;
-  picker.textContent = participants.length ? '@ 添加 Agent' : '@' + name;
-  picker.setAttribute('aria-label', '选择要 @ 的 Agent 或工作流' + (participants.length ? '' : '，当前为' + name));
+  const name = mentions.workflows[0]?.name || (state.agents.length ? profile(ids[0] || state.agent).name : '');
+  picker.textContent = participants.length ? '@ 添加 Agent' : name ? '@' + name : '@ 选择工作流';
+  picker.setAttribute('aria-label', '选择要 @ 的 Agent 或工作流' + (!participants.length && name ? '，当前为' + name : ''));
   updateSendButton(mentions);
 }
 
@@ -1261,8 +1307,9 @@ async function submitWorkflow(entry, text, raw) {
   try {
     const flow = await jsonApi('/api/workflows/' + entry.id, undefined, { signal: controller.signal });
     if (epoch !== state.epoch) return;
+    if (flow.deleted) throw new Error('这个工作流已删除，可以查看历史运行。');
     const { apiKey, model } = workflowConnection();
-    if (!apiKey && flow.nodes.some(node => node.type === 'llm')) { openConnectionSettings(); return; }
+    if (!apiKey && flow.nodes.some(node => ['llm', 'agent'].includes(node.type))) { openConnectionSettings(); return; }
     const fields = flow.nodes.find(node => node.type === 'start').config.fields;
     const bound = bindWorkflowInputs(fields, text);
     const needsFields = fields.some(field => field.required && !(Object.hasOwn(bound, field.name) && bound[field.name]))
@@ -1340,6 +1387,11 @@ $('composer').addEventListener('submit', async event => {
   if (!state.connected) { $('settings-dialog').showModal(); $('api-key').focus(); return; }
   const participants = mentioned.ids.length === 1 ? [] : mentioned.ids.length ? mentioned.ids : state.participants;
   const agent = mentioned.ids[0] || participants[0] || state.agent;
+  const missing = (participants.length ? participants : [agent]).find(id => !agentAvailable(id));
+  if (missing) {
+    errorMessage(state.agents.length ? '「' + profile(missing).name + '」已删除，请选择其他 Agent。' : '暂无可用 Agent，可以从 @ 菜单选择工作流。');
+    return;
+  }
   if (!mentioned.text) {
     if (participants.length) { errorMessage('请写下想让这些 Agent 讨论的问题。'); return; }
     $('topic').value = ''; closeMentionMenu(); selectAgent(agent); return;
@@ -1421,6 +1473,7 @@ $('attach-resource').addEventListener('click', () => { void openResourcePicker()
 $('resource-picker-search').addEventListener('input', renderResourcePicker);
 $('resource-picker-close').addEventListener('click', () => $('resource-picker-dialog').close());
 $('resource-picker-confirm').addEventListener('click', () => {
+  if (!agentAvailable('summarizer')) { $('resource-picker-dialog').close(); errorMessage('资料摘要助手已删除。'); return; }
   state.attachments = state.resources.files.filter(file => state.pickerSelection.has(file.id) && file.status === 'ready').slice(0, 5);
   state.current = null; state.replyPending = false;
   state.attachmentNotice = ''; if (state.attachments.length) selectAgent('summarizer');
@@ -1461,6 +1514,18 @@ $('resources-view').addEventListener('dragleave', event => { if (!$('resources-v
 $('resources-view').addEventListener('drop', event => { event.preventDefault(); $('resources-view').classList.remove('resource-dragging'); if (event.dataTransfer?.files.length) void uploadResources([...event.dataTransfer.files]); });
 $('list-toggle').addEventListener('click', () => document.querySelector('.workspace').classList.toggle('list-open'));
 $('agent-chat').addEventListener('click', () => { newChat(); selectAgent(state.detailAgent); $('topic').focus(); });
+$('agent-delete').addEventListener('click', async () => {
+  const id = state.detailAgent;
+  if (!id || !confirm('删除「' + detailProfile(id).name + '」？已有对话会保留，引用它的工作流节点需要改选。')) return;
+  const remove = $('agent-delete');
+  remove.disabled = true;
+  errorMessage();
+  try {
+    await jsonApi('/api/agents/' + id, undefined, { method: 'DELETE' });
+    await refreshAgentCatalog();
+  } catch (error) { errorMessage(error.message); }
+  finally { remove.disabled = false; }
+});
 $('settings-btn').addEventListener('click', () => { $('settings-dialog').showModal(); });
 $('settings-close').addEventListener('click', () => $('settings-dialog').close());
 $('connect-btn').addEventListener('click', connect); $('api-key').addEventListener('keydown', event => { if (event.key === 'Enter') void connect(); });
@@ -1482,7 +1547,21 @@ $('note-raw-toggle').addEventListener('click', () => { const raw = !$('knowledge
 $('note-forget').addEventListener('click', async () => { const page = state.snapshot.pages.find(p => p.path === state.notePath); if (!page || !confirm('忘记这篇笔记及相关记忆？')) return; halt('forget'); try { await memoryApi('forget-page', { id: page.id }); state.messages = []; state.current = null; state.replyPending = false; state.notePath = ''; state.noteVersion++; await refreshMemory(); setView('library'); } catch (error) { errorMessage(error.message); } });
 $('chat-menu').addEventListener('click', () => $('chat-actions-dialog').showModal()); $('chat-actions-close').addEventListener('click', () => $('chat-actions-dialog').close());
 $('view-chat-raw').addEventListener('click', () => { $('chat-actions-dialog').close(); void showNote(`raw/对话/${state.sessionId}.md`); });
-$('delete-session').addEventListener('click', async () => { if (!state.snapshot.sessions.some(s => s.id === state.sessionId)) return; if (!confirm('删除这次对话及相关记忆？')) return; halt('delete'); try { await memoryApi('delete-session', { id: state.sessionId }); $('chat-actions-dialog').close(); newChat(); await refreshMemory(); } catch (error) { errorMessage(error.message); } });
+$('delete-session').addEventListener('click', async () => {
+  const session = state.snapshot.sessions.find(item => item.id === state.sessionId);
+  if (!session || !confirm('删除对话「' + session.title + '」及相关记忆？')) return;
+  const button = $('delete-session');
+  button.disabled = true;
+  halt('delete');
+  try {
+    await memoryApi('delete-session', { id: session.id });
+    state.snapshot.sessions = state.snapshot.sessions.filter(item => item.id !== session.id);
+    if (session.id === state.sessionId) newChat();
+    else renderLists();
+    await refreshMemory();
+  } catch (error) { errorMessage(error.message); }
+  finally { button.disabled = false; }
+});
 window.addEventListener('pagehide', () => { halt('leave'); stopExtraction(); });
 let checkingService = false;
 setInterval(async () => {
@@ -1510,7 +1589,4 @@ const initialResource = resourceReference(location.href);
 if (initialResource) void showResource(initialResource.id, initialResource);
 else if (location.hash === '#workflow') setView('workflow');
 else void workflowEditor.refreshCatalog().then(renderDiscussion).catch(() => {});
-void jsonApi('/api/agents').then(data => {
-  if (Array.isArray(data.agents) && data.agents.length) { state.agents = data.agents; $('settings-agent').replaceChildren(...state.agents.map(item => new Option(item.name, item.id))); selectAgent(state.agent, false); renderLists(); }
-  if (typeof data.permission === 'boolean') { state.permission = data.permission; $('knowledge-permission').checked = data.permission; }
-}).catch(() => {});
+void refreshAgentCatalog().catch(() => {});

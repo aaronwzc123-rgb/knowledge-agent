@@ -33,7 +33,7 @@
       <div id="resource-list" class="side-list" aria-label="资料文件夹" hidden></div>
     </aside>
     <main class="main-panel">
-      <header class="main-header"><button id="list-toggle" class="icon-button mobile-only" type="button" aria-label="列表"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button><h2 id="current-topic">新对话</h2><div class="header-actions"><span id="status-dot" class="status-dot" data-state="idle" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">未连接</span><button id="chat-menu" class="icon-button" type="button" aria-label="对话菜单"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button></div></header>
+      <header class="main-header"><button id="list-toggle" class="icon-button mobile-only" type="button" aria-label="列表"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button><h2 id="current-topic">新对话</h2><div class="header-actions"><span id="status-dot" class="status-dot" data-state="idle" aria-hidden="true"></span><span id="status-text" role="status" aria-live="polite">未连接</span><button id="chat-menu" class="icon-button" type="button" aria-label="对话菜单"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button><button id="delete-session" class="quiet-button danger" type="button" aria-label="删除当前对话" hidden>删除</button></div></header>
       <div id="error-banner" class="error-banner" role="alert" hidden></div>
       <section id="chat-view" class="view chat-view">
         <section id="research-panel" class="research-panel" aria-label="查询" hidden><div><strong id="research-status">查询</strong><span><b id="research-count">0</b> 轮 · <b id="source-count">0</b> 来源</span></div><p id="research-query"></p><details><summary>查询记录</summary><ol id="research-history"></ol></details></section>
@@ -47,8 +47,9 @@
         </div>
       </section>
       <section id="agents-view" class="view document-view" hidden>
+        <p id="agent-empty" class="document-empty" hidden>暂无 Agent</p>
         <article id="agent-detail" class="agent-detail">
-          <div class="detail-heading"><span id="agent-avatar" class="large-avatar" aria-hidden="true">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">Wiki 只读</span><button id="agent-edit" class="secondary-button" type="button" aria-controls="agent-harness" disabled>编辑</button><button id="agent-chat" class="primary-button" type="button">对话</button></div>
+          <div class="detail-heading"><span id="agent-avatar" class="large-avatar" aria-hidden="true">问</span><h2 id="agent-name">问答助手</h2><span id="agent-permission" class="badge">Wiki 只读</span><button id="agent-delete" class="quiet-button danger" type="button">删除</button><button id="agent-edit" class="secondary-button" type="button" aria-controls="agent-harness" disabled>编辑</button><button id="agent-chat" class="primary-button" type="button">对话</button></div>
           <p id="agent-description" class="muted" hidden></p>
           <div id="agent-harness" class="agent-harness" aria-label="Agent 的 Harness"></div>
           <section id="harness2-upstream" class="harness2-upstream" hidden>
@@ -78,6 +79,7 @@
           </div>
           <div class="wf-tools">
             <button id="wf-history" class="quiet-button" type="button" disabled>运行历史</button>
+            <button id="wf-delete" class="quiet-button danger" type="button" hidden>删除</button>
             <button id="wf-edit" class="secondary-button" type="button" disabled>编辑</button>
             <button id="wf-cancel-edit" class="quiet-button" type="button" hidden>取消</button>
             <button id="wf-save" class="primary-button" type="button" hidden>保存</button>
@@ -88,6 +90,7 @@
         <p id="wf-error" class="wf-error" role="alert" hidden></p>
         <div class="wf-space">
           <div class="wf-canvas">
+            <div id="wf-empty" class="wf-empty" hidden><p>暂无工作流</p><button id="wf-empty-new" class="primary-button" type="button">新建工作流</button></div>
             <div id="wf-viewport" class="wf-viewport" role="region" aria-label="工作流画布" tabindex="0">
               <div id="wf-stage" class="wf-stage">
                 <svg class="wf-wires" width="1" height="1" aria-hidden="true"><g id="wf-edges"></g></svg>
@@ -143,7 +146,7 @@
     <section class="settings-group"><h3>声音</h3><label for="voice">声音</label><select id="voice"><option value="">系统默认</option></select><div class="setting-inline"><label for="rate">语速</label><output id="rate-value" for="rate">1.0×</output></div><input id="rate" type="range" min="0.7" max="1.5" step="0.1" value="1"><button id="test-voice" class="secondary-button" type="button">试听</button></section>
     <section class="settings-group"><h3>知识库</h3><label class="switch-row" for="knowledge-permission"><span>管理员编辑权限</span><input id="knowledge-permission" type="checkbox" role="switch"></label><p id="memory-status" class="muted" role="status"></p><div class="setting-actions"><button id="open-memory" class="secondary-button" type="button">知识库</button><a id="vault-link" class="secondary-button" href="#">Obsidian</a><button id="backup-memory" class="secondary-button" type="button">备份</button><button id="clear-memory" class="secondary-button" type="button">清除兴趣</button></div></section>
   </div></dialog>
-  <dialog id="chat-actions-dialog" aria-labelledby="chat-actions-title"><header class="dialog-heading"><h2 id="chat-actions-title">对话</h2><button id="chat-actions-close" class="icon-button" type="button" aria-label="关闭">×</button></header><div class="dialog-actions"><button id="view-chat-raw" class="secondary-button" type="button">原文</button><button id="delete-session" class="secondary-button danger" type="button">删除</button></div></dialog>
+  <dialog id="chat-actions-dialog" aria-labelledby="chat-actions-title"><header class="dialog-heading"><h2 id="chat-actions-title">对话</h2><button id="chat-actions-close" class="icon-button" type="button" aria-label="关闭">×</button></header><div class="dialog-actions"><button id="view-chat-raw" class="secondary-button" type="button">原文</button></div></dialog>
   <dialog id="resource-picker-dialog" aria-labelledby="resource-picker-title"><header class="dialog-heading"><h2 id="resource-picker-title">资料</h2><button id="resource-picker-close" class="icon-button" type="button" aria-label="关闭">×</button></header><div class="resource-picker-content"><input id="resource-picker-search" type="search" aria-label="搜索资料" placeholder="搜索" autofocus><div id="resource-picker-files" class="resource-picker-files"></div><p id="resource-picker-status" class="muted" role="status"></p><button id="resource-picker-confirm" class="primary-button" type="button">确定</button></div></dialog>
   <dialog id="resource-folder-dialog" aria-labelledby="resource-folder-title"><header class="dialog-heading"><h2 id="resource-folder-title">新建文件夹</h2><button id="resource-folder-close" class="icon-button" type="button" aria-label="关闭">×</button></header><form id="resource-folder-form" class="resource-folder-form"><label for="resource-folder-name">名称</label><input id="resource-folder-name" maxlength="120" required autofocus><p id="resource-folder-status" class="muted" role="status"></p><button class="primary-button" type="submit">创建</button></form></dialog>
   <dialog id="chat-workflow-dialog" class="wf-template-dialog" aria-labelledby="chat-workflow-title">

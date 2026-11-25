@@ -299,6 +299,7 @@ a.activity-item:hover { color: #3658ac; border-color: #a9bfed; background: #edf3
 .harness2-output { min-width: 0; max-height: 42vh; min-height: 5rem; overflow: auto; margin: 0; padding: 14px 16px; color: var(--ink); background: var(--bg); border: 1px solid #dce6f8; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .harness2-links { display: flex; flex-wrap: wrap; gap: 10px 16px; }
 @media (pointer: coarse) {
+  #delete-session, #agent-delete { min-height: 44px; min-width: 44px; }
   #agent-edit, .agent-harness button, .agent-harness :is(input:not([type=checkbox]), select), .harness2-command :is(button, select) { min-height: 44px; }
 }
 .knowledge-toolbar { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px 20px; padding-bottom: 23px; margin-bottom: 25px; border-bottom: 1px solid #dfe7f5; }

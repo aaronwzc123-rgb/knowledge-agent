@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NODE_TYPES, CONDITIONS, TEMPLATES, edgePorts, newWorkflow, outputKeys } from './workflow-schema.mjs';
+import { getAgent } from './agents.mjs';
 
 const error = (status, message) => Object.assign(new Error(message), { status });
 const identifier = /^[a-zA-Z][a-zA-Z0-9_]{0,31}$/u;
@@ -44,6 +45,10 @@ function configFor(type, config) {
     case 'llm':
       if (config.model !== '' && (typeof config.model !== 'string' || !modelName.test(config.model))) throw error(400, '模型名称不正确。');
       return { model: config.model, system: field(config.system, 9000, '系统提示词'), prompt: field(config.prompt, 12000, '用户提示词') };
+    case 'agent':
+      if (typeof config.agent !== 'string' || typeof config.remember !== 'boolean') throw error(400, 'Agent 节点格式不正确。');
+      if (config.agent) getAgent(config.agent);
+      return { agent: config.agent, prompt: field(config.prompt, 12000, 'Agent 任务'), remember: config.remember };
     case 'aggregate': return { variables: list(config.variables, 12, '聚合变量').map(variable) };
     case 'output': return { fields: namedFields(config.fields, item => ({ variable: variable(item.variable) })) };
   }
@@ -112,6 +117,10 @@ function compile(flow) {
       if (!config.system.trim() && !config.prompt.trim()) throw error(400, node.title + '需要填写提示词。');
       refs = [...(config.system + '\n' + config.prompt).matchAll(placeholders)].map(match => match[1]);
     }
+    if (node.type === 'agent') {
+      if (!config.agent || !config.prompt.trim()) throw error(400, node.title + '需要选择 Agent 并填写任务。');
+      refs = [...config.prompt.matchAll(placeholders)].map(match => match[1]);
+    }
     if (node.type === 'aggregate') refs = config.variables;
     if (node.type === 'output') refs = config.fields.map(item => item.variable);
     if (['aggregate', 'output'].includes(node.type) && !refs.length) throw error(400, node.title + '需要配置变量。');
@@ -141,32 +150,49 @@ export class WorkflowStore {
       + " status TEXT NOT NULL, started TEXT NOT NULL, finished TEXT, result TEXT NOT NULL);"
       + "CREATE INDEX IF NOT EXISTS workflow_execution_history ON workflow_executions(workflow_id, started DESC);"
       + "UPDATE workflow_executions SET status='stopped',finished=coalesce(finished,datetime('now')) WHERE status='running';");
+    if (!this.db.prepare('PRAGMA table_info(workflow_definitions)').all().some(column => column.name === 'deleted')) {
+      this.db.exec('ALTER TABLE workflow_definitions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+    }
     if (!this.db.prepare('SELECT 1 FROM workflow_definitions LIMIT 1').get()) this.create('email');
   }
   list() {
-    return this.db.prepare('SELECT id,name,revision,updated FROM workflow_definitions ORDER BY updated DESC').all();
+    return this.db.prepare('SELECT id,name,revision,updated FROM workflow_definitions WHERE deleted=0 ORDER BY updated DESC').all();
   }
   get(id) {
     const row = this.db.prepare('SELECT * FROM workflow_definitions WHERE id=?').get(id);
     if (!row) throw error(404, '找不到这个工作流。');
     const { graph, ...rest } = row;
-    return { ...rest, ...JSON.parse(graph) };
+    return { ...rest, deleted: Boolean(rest.deleted), ...JSON.parse(graph) };
+  }
+  available(id) {
+    const flow = this.get(id);
+    if (flow.deleted) throw error(410, '这个工作流已删除，可以查看历史运行。');
+    return flow;
   }
   create(template) {
     if (typeof template !== 'string' || !Object.hasOwn(TEMPLATES, template)) throw error(400, '请选择工作流模板。');
     const { name, ...graph } = newWorkflow(template);
     const id = randomUUID();
-    this.db.prepare('INSERT INTO workflow_definitions VALUES(?,?,1,?,?)').run(id, name, JSON.stringify(graph), new Date().toISOString());
+    this.db.prepare('INSERT INTO workflow_definitions(id,name,revision,graph,updated) VALUES(?,?,1,?,?)')
+      .run(id, name, JSON.stringify(graph), new Date().toISOString());
     return this.get(id);
   }
   save(id, value) {
-    this.get(id);
+    this.available(id);
     if (!Number.isSafeInteger(value?.revision)) throw error(400, '缺少工作流版本。');
     const { name, ...graph } = cleanDefinition(value);
-    const changed = this.db.prepare('UPDATE workflow_definitions SET name=?,graph=?,updated=?,revision=revision+1 WHERE id=? AND revision=?')
+    const changed = this.db.prepare('UPDATE workflow_definitions SET name=?,graph=?,updated=?,revision=revision+1 WHERE id=? AND revision=? AND deleted=0')
       .run(name, JSON.stringify(graph), new Date().toISOString(), id, value.revision);
     if (!changed.changes) throw error(409, '工作流已在另一个窗口更新。请重新打开后再编辑。');
     return this.get(id);
+  }
+  remove(id, revision) {
+    const flow = this.get(id);
+    if (flow.deleted) return { deleted: true };
+    if (!Number.isSafeInteger(revision)) throw error(400, '缺少工作流版本。');
+    const changed = this.db.prepare('UPDATE workflow_definitions SET deleted=1 WHERE id=? AND revision=? AND deleted=0').run(id, revision);
+    if (!changed.changes) throw error(409, '工作流已在另一个窗口更新，请重新打开后再删除。');
+    return { deleted: true };
   }
   history(id) {
     this.get(id);
@@ -182,8 +208,8 @@ export class WorkflowStore {
     }
     return run;
   }
-  async run(id, { revision, inputs, model }, { signal, emit, infer }) {
-    const flow = this.get(id);
+  async run(id, { revision, inputs, model }, { signal, emit, infer, runAgent }) {
+    const flow = this.available(id);
     if (revision !== flow.revision) throw error(409, '请打开最新的工作流版本后运行。');
     const plan = compile(flow);
     if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) throw error(400, '请填写运行输入。');
@@ -224,6 +250,7 @@ export class WorkflowStore {
           if (node.type === 'condition') current.input = { value: asText(requireValue(config.variable)), operator: config.operator, expected: config.value };
           if (node.type === 'wiki') current.input = { query: asText(requireValue(config.query)), source: config.source };
           if (node.type === 'llm') current.input = { system: expand(config.system), prompt: expand(config.prompt), model: config.model || model };
+          if (node.type === 'agent') current.input = { agent: config.agent, prompt: expand(config.prompt), remember: config.remember, model };
           if (node.type === 'aggregate') current.input = Object.fromEntries(config.variables.map(ref => [ref, valueOf(ref) ?? null]));
           if (node.type === 'output') current.input = Object.fromEntries(config.fields.map(item => [item.name, requireValue(item.variable)]));
           persist();
@@ -254,6 +281,10 @@ export class WorkflowStore {
             case 'llm':
               if ((current.input.system.length + current.input.prompt.length) > 52000) throw error(422, '模型输入过长，请缩短提示词或上游内容。');
               current.output = { text: await infer(current.input, signal) };
+              break;
+            case 'agent':
+              if (current.input.prompt.length > 52000) throw error(422, 'Agent 输入过长，请缩短任务或上游内容。');
+              current.output = { text: await runAgent(current.input, signal) };
               break;
             case 'aggregate': {
               const found = Object.values(current.input).find(value => value !== null);

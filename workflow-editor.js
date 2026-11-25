@@ -1,4 +1,5 @@
 import { NODE_TYPES, CONDITIONS, TEMPLATES, EMAIL_EXAMPLES, defaultNodeConfig, edgePorts, outputKeys } from './workflow-schema.mjs';
+import { getAgent } from './agents.mjs';
 
 const $ = id => document.getElementById(id);
 const API = '/api/workflows';
@@ -35,7 +36,7 @@ export async function streamWorkflow(id, body, signal, apiError, receive) {
   }
 }
 
-export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSettings, setTitle, closeList }) {
+export function mountWorkflowEditor({ jsonApi, apiError, getAgents, getConnection, openSettings, setTitle, closeList }) {
   const viewport = $('wf-viewport'), stage = $('wf-stage'), edges = $('wf-edges'), nodes = $('wf-nodes');
   const panel = $('wf-panel'), body = $('wf-panel-body'), dialog = $('wf-template-dialog');
   const add = $('wf-add'), name = $('wf-name');
@@ -57,12 +58,14 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
 
   function toolbar() {
     const text = $('wf-state');
-    const next = connection ? '选择目标输入端口' : draft ? '编辑中' : run ? labels[run.status] + ' · 版本 ' + run.flow.revision
-      : flow ? flow.nodes.length + ' 个节点 · 版本 ' + flow.revision : '加载工作流';
+    const next = flow?.deleted ? '工作流已删除' : connection ? '选择目标输入端口' : draft ? '编辑中'
+      : run ? labels[run.status] + ' · 版本 ' + run.flow.revision
+      : flow ? flow.nodes.length + ' 个节点 · 版本 ' + flow.revision : '';
     if (next !== text.textContent) text.textContent = next;
-    $('wf-edit').hidden = $('wf-test').hidden = !!draft || !!controller;
+    $('wf-edit').hidden = $('wf-test').hidden = $('wf-delete').hidden = !flow || flow.deleted || !!draft || !!controller;
     $('wf-edit').disabled = $('wf-test').disabled = $('wf-history').disabled = !flow || !!draft || busy();
-    $('new-workflow').disabled = busy();
+    $('new-workflow').disabled = $('wf-empty-new').disabled = $('wf-delete').disabled = busy();
+    $('wf-empty').hidden = !!flow;
     $('wf-stop').hidden = !controller;
     for (const element of [add, name, $('wf-save'), $('wf-cancel-edit')]) {
       element.hidden = !draft;
@@ -101,16 +104,19 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
     detail = '';
     delete viewport.dataset.connecting;
     inputs = {};
-    setTitle(flow.name);
+    setTitle(flow?.name || '工作流');
     render();
     filter(search);
     requestAnimationFrame(fit);
   }
   async function open() {
-    if (flow) { setTitle(flow.name); requestAnimationFrame(drawEdges); return; }
     const sequence = ++request;
     await refreshCatalog();
-    if (sequence !== request || !workflows.length) return;
+    if (sequence !== request) return;
+    if (flow && (flow.deleted || workflows.some(item => item.id === flow.id))) {
+      setTitle(flow.name); requestAnimationFrame(drawEdges); return;
+    }
+    if (!workflows.length) { activate(null); return; }
     const selected = await jsonApi(API + '/' + workflows[0].id);
     if (sequence === request) activate(selected);
   }
@@ -192,7 +198,8 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
       item.card.dataset.status = status;
       item.card.dataset.chosen = String(id === chosen && detail === 'node');
       item.label.setAttribute('aria-pressed', item.card.dataset.chosen);
-      item.sub.textContent = NODE_TYPES[node.type].name + (status ? ' · ' + labels[status] : '');
+      const description = node.type === 'agent' && node.config.agent ? getAgent(node.config.agent).name : NODE_TYPES[node.type].name;
+      item.sub.textContent = description + (status ? ' · ' + labels[status] : '');
       for (const [port, handle] of Object.entries(item.handles)) {
         handle.dataset.pending = String(connection?.from === id && connection.port === port);
       }
@@ -442,7 +449,19 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
       if (config.model && !models.some(([id]) => id === config.model)) models.push([config.model, config.model]);
       edit(section, '模型', config, 'model', { options: [['', '使用当前连接的模型'], ...models] });
       edit(section, '系统提示词', config, 'system', { multiline: true });
-      const prompt = edit(section, '用户提示词', config, 'prompt', { multiline: true });
+    }
+    if (node.type === 'agent') {
+      const active = getAgents().map(agent => [agent.id, agent.name]);
+      if (config.agent && !active.some(([id]) => id === config.agent)) {
+        active.push([config.agent, getAgent(config.agent).name + '（已删除）']);
+      }
+      field(section, '执行 Agent', config.agent, editable ? value => {
+        config.agent = value; paintSteps();
+      } : null, { options: [['', '选择 Agent'], ...active] });
+      edit(section, '使用 Agent 记忆和本地 Wiki', config, 'remember', { type: 'checkbox' });
+    }
+    if (node.type === 'llm' || node.type === 'agent') {
+      const prompt = edit(section, node.type === 'agent' ? '本步任务' : '用户提示词', config, 'prompt', { multiline: true });
       if (editable && variables.length) {
         const picker = field(section, '插入变量', '', ref => {
           if (!ref) return;
@@ -512,7 +531,7 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
       }
       body.append(links);
     }
-    if (editable && ['condition', 'wiki', 'llm', 'aggregate'].includes(node.type)) body.append(button('移除节点', () => {
+    if (editable && !['start', 'output'].includes(node.type)) body.append(button('移除节点', () => {
       draft.nodes = draft.nodes.filter(item => item !== node);
       draft.edges = draft.edges.filter(item => item.from !== node.id && item.to !== node.id);
       chosen = null; detail = '';
@@ -526,7 +545,7 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
       if (run.error) body.append(make('p', 'wf-error', run.error));
       if (run.output) for (const [key, value] of Object.entries(run.output)) display(key, value, true);
       for (const step of run.steps) body.append(button(nodeFor(step.id).title + ' · ' + labels[step.status], () => inspect(step.id, true), 'wf-step-button'));
-      if (!controller) body.append(button('再次试运行', openRun, 'primary-button'));
+      if (!controller && !flow.deleted) body.append(button('再次试运行', openRun, 'primary-button'));
       return;
     }
     const form = make('form', 'wf-config');
@@ -573,15 +592,16 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
     body.scrollTop = scroll;
   }
   function openRun() {
+    if (!flow || flow.deleted) return;
     const resize = run && run.flow.revision !== flow.revision;
     run = null; chosen = null; detail = 'run';
     render();
     if (resize) requestAnimationFrame(fit);
   }
   async function startRun() {
-    if (busy() || draft) return;
+    if (busy() || draft || !flow || flow.deleted) return;
     const { apiKey, model } = getConnection();
-    if (!apiKey && flow.nodes.some(node => node.type === 'llm')) { openSettings(); return; }
+    if (!apiKey && flow.nodes.some(node => ['llm', 'agent'].includes(node.type))) { openSettings(); return; }
     const active = new AbortController();
     controller = active;
     run = { flow, steps: [], started: new Date().toISOString(), status: 'running' };
@@ -621,6 +641,7 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
     paintNodes(); inspect(id, true);
   });
   $('wf-edit').addEventListener('click', () => {
+    if (!flow || flow.deleted || busy()) return;
     const resize = run && run.flow.revision !== flow.revision;
     run = null; draft = structuredClone(flow);
     name.value = draft.name;
@@ -647,6 +668,18 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
     render(); requestAnimationFrame(fit); $('wf-edit').focus();
   });
   $('wf-test').addEventListener('click', openRun);
+  $('wf-delete').addEventListener('click', safe(async () => {
+    if (!flow || flow.deleted || draft || busy()) return;
+    if (!confirm('删除「' + flow.name + '」？对话中已有的运行链接仍可打开。')) return;
+    saving = true; toolbar(); filter(search);
+    try {
+      const { id, revision } = flow;
+      await jsonApi(API + '/' + id, { revision }, { method: 'DELETE' });
+      workflows = workflows.filter(item => item.id !== id);
+      activate(null);
+      await open();
+    } finally { saving = false; toolbar(); filter(search); }
+  }));
   $('wf-stop').addEventListener('click', () => controller?.abort());
   $('wf-history').addEventListener('click', safe(async () => {
     detail = 'history'; chosen = null; entries = null;
@@ -666,9 +699,11 @@ export function mountWorkflowEditor({ jsonApi, apiError, getConnection, openSett
     if (chosen) items.get(chosen)?.label.focus({ preventScroll: true });
     else $('wf-node-list').focus();
   });
-  $('new-workflow').addEventListener('click', () => {
+  function showTemplates() {
     if (!busy() && allowDiscard()) dialog.showModal();
-  });
+  }
+  $('new-workflow').addEventListener('click', showTemplates);
+  $('wf-empty-new').addEventListener('click', showTemplates);
   $('wf-close-templates').addEventListener('click', () => dialog.close());
   const choices = $('wf-templates');
   for (const [template, spec] of Object.entries(TEMPLATES)) {

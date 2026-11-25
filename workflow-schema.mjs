@@ -3,6 +3,7 @@ export const NODE_TYPES = {
   condition: { name: '条件分支', icon: '⑂', help: '根据变量走 IF 或 ELSE 分支。' },
   wiki: { name: '知识检索', icon: '▤', help: '用上游变量检索资料，返回摘录及来源。' },
   llm: { name: 'LLM', icon: '✦', help: '把提示词与引用的变量交给模型。' },
+  agent: { name: 'Agent', icon: '◉', help: '调用所选 Agent 执行一次任务，并把回复传给下游。' },
   aggregate: { name: '变量聚合', icon: '⋈', help: '按顺序取本次执行中第一个可用的变量。' },
   output: { name: '输出', icon: '↗', help: '将上游变量作为结果返回。' },
 };
@@ -18,6 +19,7 @@ export function defaultNodeConfig(type) {
     case 'condition': return { variable: '', operator: 'contains', value: '' };
     case 'wiki': return { query: '', source: 'wiki' };
     case 'llm': return { model: '', system: '', prompt: '' };
+    case 'agent': return { agent: '', prompt: '', remember: true };
     case 'aggregate': return { variables: [] };
     case 'output': return { fields: [{ name: 'result', variable: '' }] };
   }
@@ -25,7 +27,7 @@ export function defaultNodeConfig(type) {
 
 export function outputKeys(node) {
   if (node.type === 'start') return node.config.fields.map(field => field.name).filter(Boolean);
-  return { wiki: ['context', 'notes'], llm: ['text'], aggregate: ['value'] }[node.type] || [];
+  return { wiki: ['context', 'notes'], llm: ['text'], agent: ['text'], aggregate: ['value'] }[node.type] || [];
 }
 
 export function edgePorts(type) {
